@@ -1,23 +1,7 @@
 {
   "projects": {
-    "default": "kirimba-platform"
+    " default": "kirimba-banking"
   },
-  "targets": {
-    "kirimba-platform": {
-      "hosting": {
-        "app": [
-          "kirimba-app"
-        ],
-        "agent": [
-          "kirimba-agent"
-        ],
-        "admin": [
-          "kirimba-admin"
-        ],
-        "umuco": [
-          "kirimba-umuco"
-        ]
-      }
-    }
-  }
+  "targets": {},
+  "etags": {}
 }

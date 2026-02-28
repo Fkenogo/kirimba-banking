@@ -1,5 +1,5 @@
-"use strict";
+const functions = require("firebase-functions");
 
-// Cloud Functions entrypoint for KIRIMBA.
-// Business logic functions will be exported from ./src modules in later phases.
-module.exports = {};
+exports.healthCheck = functions.https.onRequest((req, res) => {
+  res.status(200).send("KIRIMBA backend is running");
+});
