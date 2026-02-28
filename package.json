@@ -1,0 +1,20 @@
+{
+  "name": "kirimba-banking",
+  "private": true,
+  "version": "0.0.1",
+  "workspaces": [
+    "functions",
+    "apps/*"
+  ],
+  "scripts": {
+    "install:all": "npm install --workspaces",
+    "build:member": "npm --workspace apps/member run build",
+    "build:agent": "npm --workspace apps/agent run build",
+    "build:admin": "npm --workspace apps/admin run build",
+    "build:umuco": "npm --workspace apps/umuco run build",
+    "build:functions": "npm --workspace functions run deploy -- --only functions",
+    "build:all": "npm run build:member && npm run build:agent && npm run build:admin && npm run build:umuco",
+    "emulators": "firebase emulators:start",
+    "deploy": "npm run build:all && firebase deploy"
+  }
+}

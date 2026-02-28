@@ -1,0 +1,23 @@
+{
+  "projects": {
+    "default": "kirimba-platform"
+  },
+  "targets": {
+    "kirimba-platform": {
+      "hosting": {
+        "app": [
+          "kirimba-app"
+        ],
+        "agent": [
+          "kirimba-agent"
+        ],
+        "admin": [
+          "kirimba-admin"
+        ],
+        "umuco": [
+          "kirimba-umuco"
+        ]
+      }
+    }
+  }
+}
