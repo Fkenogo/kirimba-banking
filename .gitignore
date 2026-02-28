@@ -3,9 +3,9 @@ node_modules/
 .env.*
 .firebase/
 firebase-debug.log
+firestore-debug.log
 dist/
 build/
 .DS_Store
 coverage/
 .vscode/
-firebase-debug.log
