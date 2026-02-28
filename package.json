@@ -16,5 +16,8 @@
     "build:all": "npm run build:member && npm run build:agent && npm run build:admin && npm run build:umuco",
     "emulators": "firebase emulators:start",
     "deploy": "npm run build:all && firebase deploy"
+  },
+  "dependencies": {
+    "firebase": "^12.10.0"
   }
 }
