@@ -1,6 +1,7 @@
 const functions = require("firebase-functions/v1");
 const admin = require("firebase-admin");
 const { FieldValue } = require("firebase-admin/firestore");
+const members = require("./src/members");
 
 if (!admin.apps.length) {
   admin.initializeApp();
@@ -34,16 +35,22 @@ exports.onUserCreate = functions.auth.user().onCreate(async (user) => {
     const writes = [];
 
     if (!userSnap.exists) {
+      const userPayload = {
+        uid,
+        role: "member",
+        status: "pending_approval",
+        createdAt: FieldValue.serverTimestamp(),
+      };
+      if (email) {
+        userPayload.email = email;
+      }
+      if (phoneNumber) {
+        userPayload.phone = phoneNumber;
+      }
+
       writes.push(
         userRef.set(
-          {
-            uid,
-            email: email || null,
-            phone: phoneNumber || null,
-            role: "member",
-            status: "pending_approval",
-            createdAt: FieldValue.serverTimestamp(),
-          },
+          userPayload,
           { merge: true }
         )
       );
@@ -77,3 +84,13 @@ exports.onUserCreate = functions.auth.user().onCreate(async (user) => {
     console.error(`Error creating user/wallet for ${uid}:`, error);
   }
 });
+
+exports.registerMember = members.registerMember;
+exports.approveMember = members.approveMember;
+exports.rejectMember = members.rejectMember;
+exports.createGroup = members.createGroup;
+exports.approveGroup = members.approveGroup;
+exports.joinGroup = members.joinGroup;
+exports.approveJoinRequest = members.approveJoinRequest;
+exports.resetPIN = members.resetPIN;
+exports.getPendingApprovals = members.getPendingApprovals;

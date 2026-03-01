@@ -5,23 +5,98 @@ service cloud.firestore {
       return request.auth != null;
     }
 
+    function role() {
+      return isSignedIn() && request.auth.token.role is string
+        ? request.auth.token.role
+        : "";
+    }
+
+    function isAdmin() {
+      return role() == "super_admin" || role() == "finance";
+    }
+
+    function isAgent() {
+      return role() == "agent";
+    }
+
+    function isUmuco() {
+      return role() == "umuco";
+    }
+
+    function isLeader() {
+      return role() == "leader";
+    }
+
+    function isMember() {
+      return role() == "member";
+    }
+
     function isOwner(uid) {
       return isSignedIn() && request.auth.uid == uid;
     }
 
-    // Member can read own profile. Writes are backend-only via Cloud Functions/Admin SDK.
+    // Profiles: members read own profile; elevated roles can read all.
     match /users/{userId} {
-      allow read: if isOwner(userId);
+      allow read: if isOwner(userId) || isAdmin() || isAgent();
       allow write: if false;
     }
 
-    // Member can read own wallet. Writes are backend-only via Cloud Functions/Admin SDK.
+    // Wallets: members read own wallet; elevated roles can read all.
     match /wallets/{userId} {
-      allow read: if isOwner(userId);
+      allow read: if isOwner(userId) || isAdmin() || isAgent();
       allow write: if false;
     }
 
-    // Default deny for all other collections until explicit rules are added.
+    // Groups: readable by relevant roles, writable only by backend.
+    match /groups/{groupId} {
+      allow read: if isSignedIn() && (isAdmin() || isAgent() || isUmuco() || isLeader() || isMember());
+      allow write: if false;
+
+      match /joinRequests/{joinRequestId} {
+        allow read: if isSignedIn() && (isAdmin() || isLeader());
+        allow write: if false;
+      }
+    }
+
+    match /groupMembers/{memberId} {
+      allow read: if isSignedIn() && (isOwner(memberId) || isAdmin() || isAgent() || isLeader());
+      allow write: if false;
+    }
+
+    match /transactions/{txnId} {
+      allow read: if isSignedIn() && (isAdmin() || isAgent() || isUmuco() || isLeader() || isMember());
+      allow write: if false;
+    }
+
+    match /loans/{loanId} {
+      allow read: if isSignedIn() && (isAdmin() || isAgent() || isLeader() || isMember());
+      allow write: if false;
+    }
+
+    match /depositBatches/{batchId} {
+      allow read: if isSignedIn() && (isAdmin() || isAgent() || isUmuco());
+      allow write: if false;
+    }
+
+    match /kirimbaFund/{recordId} {
+      allow read: if isSignedIn() && isAdmin();
+      allow write: if false;
+    }
+
+    match /fundMovements/{movementId} {
+      allow read: if isSignedIn() && isAdmin();
+      allow write: if false;
+    }
+
+    match /notifications/{notificationId} {
+      allow read: if isSignedIn() && (
+        isAdmin() ||
+        resource.data.recipientId == request.auth.uid ||
+        resource.data.userId == request.auth.uid
+      );
+      allow write: if false;
+    }
+
     match /{document=**} {
       allow read, write: if false;
     }
