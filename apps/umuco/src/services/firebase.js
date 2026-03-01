@@ -10,6 +10,15 @@ const requiredEnvVars = [
   "VITE_FIREBASE_APP_ID",
 ];
 
+if (import.meta.env.DEV) {
+  const envPresence = requiredEnvVars.reduce((acc, key) => {
+    acc[key] = Boolean(import.meta.env[key]);
+    return acc;
+  }, {});
+
+  console.info("[KIRIMBA app] Firebase env presence", envPresence);
+}
+
 for (const key of requiredEnvVars) {
   if (!import.meta.env[key]) {
     throw new Error(`Missing Firebase config: ${key}`);

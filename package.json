@@ -8,6 +8,11 @@
   ],
   "scripts": {
     "install:all": "npm install --workspaces",
+    "dev:member": "npm --workspace apps/member run dev -- --port 5173",
+    "dev:agent": "npm --workspace apps/agent run dev -- --port 5174",
+    "dev:admin": "npm --workspace apps/admin run dev -- --port 5175",
+    "dev:umuco": "npm --workspace apps/umuco run dev -- --port 5176",
+    "dev:all": "concurrently -n MEMBER,AGENT,ADMIN,UMUCO -c green,blue,magenta,cyan \"npm run dev:member\" \"npm run dev:agent\" \"npm run dev:admin\" \"npm run dev:umuco\"",
     "build:member": "npm --workspace apps/member run build",
     "build:agent": "npm --workspace apps/agent run build",
     "build:admin": "npm --workspace apps/admin run build",
@@ -19,5 +24,8 @@
   },
   "dependencies": {
     "firebase": "^12.10.0"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1"
   }
 }
