@@ -78,9 +78,10 @@ For each implementation slice:
 Completed:
 - Slice 1: backend `onUserCreate` creates `users/{uid}` + `wallets/{uid}` with idempotent wallet creation and `pending_approval` status default.
 - Slice 2: member app Firebase auth wiring and minimal login/signup flow.
+- Slice 4: savings + deposit batch backend flow (`recordDeposit`, `submitBatch`, `confirmBatch`, `flagBatch`, `getBatchesForGroup`) with Firestore-transaction safety and emulator verification.
 
 In progress:
-- Slice 3: apply consistent Firebase auth wiring pattern to `agent`, `admin`, and `umuco` apps.
+- Slice 5: loan lifecycle backend (`requestLoan`, `disburseLoan`, `recordRepayment`, `markLoanDefaulted`).
 
 ## 8) Change-Risk Notes to Re-check Before Each Push
 
@@ -88,4 +89,3 @@ In progress:
 - If changing runtime, verify deploy compatibility with current Firebase project.
 - Preserve artifact registry retention policy; do not alter cleanup settings.
 - Never commit service account JSON, private keys, or raw secrets.
-

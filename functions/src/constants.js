@@ -28,9 +28,31 @@ const JOIN_REQUEST_STATUS = {
   REJECTED: "rejected",
 };
 
+const TRANSACTION_TYPE = {
+  DEPOSIT: "deposit",
+  WITHDRAWAL: "withdrawal",
+  LOAN_DISBURSE: "loan_disburse",
+  LOAN_REPAY: "loan_repay",
+};
+
+const TRANSACTION_STATUS = {
+  PENDING_UMUCO: "pending_umuco",
+  CONFIRMED: "confirmed",
+  REJECTED: "rejected",
+};
+
+const DEPOSIT_BATCH_STATUS = {
+  SUBMITTED: "submitted",
+  CONFIRMED: "confirmed",
+  FLAGGED: "flagged",
+};
+
 module.exports = {
   ROLES,
   USER_STATUS,
   GROUP_STATUS,
   JOIN_REQUEST_STATUS,
+  TRANSACTION_TYPE,
+  TRANSACTION_STATUS,
+  DEPOSIT_BATCH_STATUS,
 };
