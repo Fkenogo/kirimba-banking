@@ -18,6 +18,8 @@ if (!admin.apps.length) {
 }
 
 const db = admin.firestore();
+const MIN_WITHDRAWAL_REMAINING_BALANCE = 5000;
+const WITHDRAWAL_APPROVAL_THRESHOLD = 50000;
 
 function httpsError(code, message) {
   return new functions.https.HttpsError(code, message);
@@ -255,6 +257,126 @@ exports.submitBatch = functions.https.onCall(async (data, context) => {
     batchId: batchRef.id,
     totalAmount,
     memberCount: memberIds.size,
+  };
+});
+
+exports.recordWithdrawal = functions.https.onCall(async (data, context) => {
+  await requireRole(context, [ROLES.AGENT]);
+
+  const userId = String(data?.userId || "").trim();
+  const notes = String(data?.notes || "").trim();
+  const amount = parseAmount(data?.amount);
+
+  if (!userId) {
+    throw httpsError("invalid-argument", "userId is required.");
+  }
+
+  const memberState = await getActiveMemberAndGroup(userId);
+  const availableToWithdraw = Number(memberState.memberData.personalSavings || 0) -
+    Number(memberState.memberData.lockedSavings || 0);
+
+  if ((availableToWithdraw - amount) < MIN_WITHDRAWAL_REMAINING_BALANCE) {
+    throw httpsError(
+      "failed-precondition",
+      `Withdrawal would violate minimum balance of ${MIN_WITHDRAWAL_REMAINING_BALANCE} BIF.`
+    );
+  }
+
+  if (amount > WITHDRAWAL_APPROVAL_THRESHOLD) {
+    const requestRef = db.collection("withdrawalRequests").doc();
+    await requestRef.set({
+      userId,
+      groupId: memberState.groupId,
+      amount,
+      notes,
+      status: "pending_approval",
+      requestedBy: context.auth.uid,
+      createdAt: FieldValue.serverTimestamp(),
+      minRequiredBalance: MIN_WITHDRAWAL_REMAINING_BALANCE,
+    });
+
+    return {
+      success: true,
+      status: "pending_approval",
+      requestId: requestRef.id,
+      amount,
+    };
+  }
+
+  const receiptNo = await generateReceiptNo(db, "TXN");
+  const transactionRef = db.collection("transactions").doc();
+
+  await db.runTransaction(async (tx) => {
+    const [gmSnap, groupSnap] = await Promise.all([
+      tx.get(db.collection("groupMembers").doc(userId)),
+      tx.get(db.collection("groups").doc(memberState.groupId)),
+    ]);
+
+    if (!gmSnap.exists || !groupSnap.exists) {
+      throw httpsError("failed-precondition", "Group member or group missing.");
+    }
+
+    const gmData = gmSnap.data();
+    const groupData = groupSnap.data();
+    const personalSavings = Number(gmData.personalSavings || 0);
+    const lockedSavings = Number(gmData.lockedSavings || 0);
+    const newPersonalSavings = personalSavings - amount;
+
+    if ((newPersonalSavings - lockedSavings) < MIN_WITHDRAWAL_REMAINING_BALANCE) {
+      throw httpsError(
+        "failed-precondition",
+        `Withdrawal would violate minimum balance of ${MIN_WITHDRAWAL_REMAINING_BALANCE} BIF.`
+      );
+    }
+
+    const creditLimit = calculateCreditLimit(newPersonalSavings);
+    const availableCredit = Math.max(0, creditLimit - lockedSavings);
+    const groupTotalSavings = Number(groupData.totalSavings || 0);
+
+    tx.set(
+      db.collection("groupMembers").doc(userId),
+      {
+        personalSavings: newPersonalSavings,
+        creditLimit,
+        availableCredit,
+        updatedAt: FieldValue.serverTimestamp(),
+      },
+      { merge: true }
+    );
+
+    tx.set(
+      db.collection("groups").doc(memberState.groupId),
+      {
+        totalSavings: Math.max(0, groupTotalSavings - amount),
+        updatedAt: FieldValue.serverTimestamp(),
+      },
+      { merge: true }
+    );
+
+    tx.set(transactionRef, {
+      memberId: userId,
+      userId,
+      groupId: memberState.groupId,
+      type: TRANSACTION_TYPE.WITHDRAWAL,
+      amount,
+      status: TRANSACTION_STATUS.CONFIRMED,
+      recordedBy: context.auth.uid,
+      channel: "agent",
+      batchId: null,
+      notes,
+      receiptNo,
+      balanceBefore: personalSavings,
+      balanceAfter: newPersonalSavings,
+      createdAt: FieldValue.serverTimestamp(),
+    });
+  });
+
+  return {
+    success: true,
+    status: TRANSACTION_STATUS.CONFIRMED,
+    transactionId: transactionRef.id,
+    receiptNo,
+    amount,
   };
 });
 

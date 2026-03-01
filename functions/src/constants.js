@@ -47,6 +47,20 @@ const DEPOSIT_BATCH_STATUS = {
   FLAGGED: "flagged",
 };
 
+const LOAN_STATUS = {
+  PENDING: "pending",
+  ACTIVE: "active",
+  REPAID: "repaid",
+  DEFAULTED: "defaulted",
+  REJECTED: "rejected",
+};
+
+const LOAN_TERMS = {
+  DAYS_7: 7,
+  DAYS_14: 14,
+  DAYS_30: 30,
+};
+
 module.exports = {
   ROLES,
   USER_STATUS,
@@ -55,4 +69,6 @@ module.exports = {
   TRANSACTION_TYPE,
   TRANSACTION_STATUS,
   DEPOSIT_BATCH_STATUS,
+  LOAN_STATUS,
+  LOAN_TERMS,
 };

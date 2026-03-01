@@ -78,10 +78,11 @@ For each implementation slice:
 Completed:
 - Slice 1: backend `onUserCreate` creates `users/{uid}` + `wallets/{uid}` with idempotent wallet creation and `pending_approval` status default.
 - Slice 2: member app Firebase auth wiring and minimal login/signup flow.
-- Slice 4: savings + deposit batch backend flow (`recordDeposit`, `submitBatch`, `confirmBatch`, `flagBatch`, `getBatchesForGroup`) with Firestore-transaction safety and emulator verification.
+- Slice 3/4: savings + deposit batch backend flow (`recordDeposit`, `recordWithdrawal`, `submitBatch`, `confirmBatch`, `flagBatch`, `getBatchesForGroup`) with Firestore-transaction safety and emulator verification.
+- Slice 5: loan lifecycle backend (`requestLoan`, `disburseLoan`, `recordRepayment`, `markLoanDefaulted`, loan query helpers) with emulator verification.
 
 In progress:
-- Slice 5: loan lifecycle backend (`requestLoan`, `disburseLoan`, `recordRepayment`, `markLoanDefaulted`).
+- Slice 6: member app integration of savings/loan callable flows (beyond auth scaffold).
 
 ## 8) Change-Risk Notes to Re-check Before Each Push
 

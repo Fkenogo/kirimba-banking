@@ -6,7 +6,7 @@ KIRIMBA is a digital group savings and lending platform for informal groups and 
 
 - Firebase Firestore
 - Firebase Authentication
-- Firebase Cloud Functions (Node.js 18)
+- Firebase Cloud Functions (Node.js 20)
 - Firebase Hosting (multi-site)
 - React + Vite + TailwindCSS
 
@@ -25,12 +25,13 @@ KIRIMBA is a digital group savings and lending platform for informal groups and 
 ## Setup
 
 ```bash
+nvm use
 npm install
-firebase emulators:start
+firebase emulators:start --only auth,firestore,functions
 firebase deploy
 ```
 
 ## Notes
 
-- This repository currently contains infrastructure scaffolding only.
-- No production business logic has been implemented yet.
+- Cloud Functions currently include member onboarding, group management, savings/deposit-batch flows, loan lifecycle callables, and health checks.
+- Frontend apps are scaffolded with Firebase auth wiring for member, agent, admin, and umuco portals.

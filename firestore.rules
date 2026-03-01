@@ -88,6 +88,11 @@ service cloud.firestore {
       allow write: if false;
     }
 
+    match /withdrawalRequests/{requestId} {
+      allow read: if isSignedIn() && (isAdmin() || isAgent() || resource.data.userId == request.auth.uid);
+      allow write: if false;
+    }
+
     match /notifications/{notificationId} {
       allow read: if isSignedIn() && (
         isAdmin() ||

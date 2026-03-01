@@ -3,6 +3,7 @@ const admin = require("firebase-admin");
 const { FieldValue } = require("firebase-admin/firestore");
 const members = require("./src/members");
 const savings = require("./src/savings");
+const loans = require("./src/loans");
 
 if (!admin.apps.length) {
   admin.initializeApp();
@@ -97,7 +98,15 @@ exports.resetPIN = members.resetPIN;
 exports.getPendingApprovals = members.getPendingApprovals;
 
 exports.recordDeposit = savings.recordDeposit;
+exports.recordWithdrawal = savings.recordWithdrawal;
 exports.submitBatch = savings.submitBatch;
 exports.confirmBatch = savings.confirmBatch;
 exports.flagBatch = savings.flagBatch;
 exports.getBatchesForGroup = savings.getBatchesForGroup;
+
+exports.requestLoan = loans.requestLoan;
+exports.disburseLoan = loans.disburseLoan;
+exports.recordRepayment = loans.recordRepayment;
+exports.markLoanDefaulted = loans.markLoanDefaulted;
+exports.getMemberLoans = loans.getMemberLoans;
+exports.getLoansByGroup = loans.getLoansByGroup;
