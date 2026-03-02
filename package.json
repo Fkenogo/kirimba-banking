@@ -20,6 +20,8 @@
     "build:functions": "npm --workspace functions run deploy -- --only functions",
     "build:all": "npm run build:member && npm run build:agent && npm run build:admin && npm run build:umuco",
     "emulators": "firebase emulators:start",
+    "emulators:core": "firebase emulators:start --only auth,firestore,functions",
+    "emulators:auth": "firebase emulators:start --only auth",
     "deploy": "npm run build:all && firebase deploy"
   },
   "dependencies": {

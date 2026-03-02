@@ -27,7 +27,7 @@ KIRIMBA is a digital group savings and lending platform for informal groups and 
 ```bash
 nvm use
 npm install
-firebase emulators:start --only auth,firestore,functions
+npm run emulators:core
 firebase deploy
 ```
 
@@ -35,3 +35,10 @@ firebase deploy
 
 - Cloud Functions currently include member onboarding, group management, savings/deposit-batch flows, loan lifecycle callables, and health checks.
 - Frontend apps are scaffolded with Firebase auth wiring for member, agent, admin, and umuco portals.
+
+## Local Auth Troubleshooting
+
+- Run each app from its workspace, for example `npm run dev:member` or `npm --workspace apps/member run dev`.
+- Each app needs Firebase env vars in `apps/<app>/.env.local` (`member`, `agent`, `admin`, `umuco`).
+- If `VITE_USE_FIREBASE_EMULATORS=true`, you must run `npm run emulators:core`; otherwise Auth requests to `127.0.0.1:9099` will fail with `auth/network-request-failed`.
+- If you do not want local emulators, set `VITE_USE_FIREBASE_EMULATORS=false` in each app `.env.local`.

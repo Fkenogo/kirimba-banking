@@ -37,9 +37,25 @@ const firebaseConfig = {
 const app = getApps().length ? getApp() : initializeApp(firebaseConfig);
 const auth = getAuth(app);
 
-const useEmulators = import.meta.env.VITE_USE_FIREBASE_EMULATORS === "true";
+const emulatorHost = import.meta.env.VITE_FIREBASE_AUTH_EMULATOR_HOST || "127.0.0.1:9099";
+const isLocalBrowser =
+  typeof window !== "undefined" &&
+  (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1");
+const useEmulators = import.meta.env.VITE_USE_FIREBASE_EMULATORS === "true" && isLocalBrowser;
+
 if (useEmulators && !auth.emulatorConfig) {
-  connectAuthEmulator(auth, "http://127.0.0.1:9099", { disableWarnings: true });
+  connectAuthEmulator(auth, `http://${emulatorHost}`, { disableWarnings: true });
 }
 
-export { app, auth };
+if (import.meta.env.DEV && import.meta.env.VITE_USE_FIREBASE_EMULATORS === "true" && !isLocalBrowser) {
+  console.warn(
+    "[KIRIMBA app] VITE_USE_FIREBASE_EMULATORS=true ignored because host is not localhost/127.0.0.1"
+  );
+}
+
+const authRuntime = {
+  useEmulators,
+  emulatorHost,
+};
+
+export { app, auth, authRuntime };
