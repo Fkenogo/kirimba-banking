@@ -1,6 +1,6 @@
 {
   "projects": {
-    " default": "kirimba-banking"
+    "default": "kirimba-banking"
   },
   "targets": {},
   "etags": {}
