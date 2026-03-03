@@ -53,7 +53,10 @@ service cloud.firestore {
         isAdmin() ||
         isAgent() ||
         isUmuco() ||
-        exists(/databases/$(database)/documents/groupMembers/$(groupId)_$(request.auth.uid))
+        (
+          exists(/databases/$(database)/documents/groupMembers/$(request.auth.uid)) &&
+          get(/databases/$(database)/documents/groupMembers/$(request.auth.uid)).data.groupId == groupId
+        )
       );
       allow write: if false;
 
