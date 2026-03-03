@@ -210,6 +210,7 @@ exports.approveMember = functions.https.onCall(async (data, context) => {
         recipientId: groupDoc.data().leaderId || null,
         status: "unread",
         createdAt: FieldValue.serverTimestamp(),
+        expiresAt: new Date(Date.now() + 90 * 24 * 60 * 60 * 1000), // 90 days TTL
       });
     }
   }
@@ -364,6 +365,7 @@ exports.joinGroup = functions.https.onCall(async (data, context) => {
     recipientId: group.leaderId || null,
     status: "unread",
     createdAt: FieldValue.serverTimestamp(),
+    expiresAt: new Date(Date.now() + 90 * 24 * 60 * 60 * 1000), // 90 days TTL
   });
 
   let leaderName = "Group Leader";
@@ -471,6 +473,7 @@ exports.approveJoinRequest = functions.https.onCall(async (data, context) => {
     status: "unread",
     sourceRequestStatus: targetRequestData?.status || JOIN_REQUEST_STATUS.PENDING,
     createdAt: FieldValue.serverTimestamp(),
+    expiresAt: new Date(Date.now() + 90 * 24 * 60 * 60 * 1000), // 90 days TTL
   });
 
   return { success: true };

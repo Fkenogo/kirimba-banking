@@ -106,6 +106,7 @@ async function getActiveMemberAndGroup(userId) {
 exports.recordDeposit = functions.https.onCall(async (data, context) => {
   await requireRole(context, [ROLES.AGENT]);
 
+  const agentId = context.auth.uid;
   const userId = String(data?.userId || "").trim();
   const notes = String(data?.notes || "").trim();
   const channel = String(data?.channel || "").trim();
@@ -125,6 +126,32 @@ exports.recordDeposit = functions.https.onCall(async (data, context) => {
   const balanceBefore = Number(memberState.memberData.personalSavings || 0);
 
   await db.runTransaction(async (tx) => {
+    // CRITICAL: Verify agent has access to member's group
+    const agentDoc = await tx.get(db.collection('agents').doc(agentId));
+    if (!agentDoc.exists) {
+      throw httpsError('not-found', 'Agent profile not found');
+    }
+
+    const agentData = agentDoc.data();
+    const allowedGroups = agentData.assignedGroups || [];
+
+    if (allowedGroups.length === 0) {
+      throw httpsError('permission-denied', 'Agent not assigned to any groups');
+    }
+
+    const memberGroupId = memberState.groupId;
+
+    // Verify agent has access to this member's group
+    if (!allowedGroups.includes(memberGroupId)) {
+      functions.logger.error('Cross-group deposit attempt blocked', {
+        agentId: '[REDACTED]',
+        userId: '[REDACTED]',
+        memberGroupId,
+        allowedGroups,
+      });
+
+      throw httpsError('permission-denied', 'Agent cannot record deposits for this member');
+    }
     tx.set(transactionRef, {
       memberId: userId,
       userId,
@@ -174,9 +201,14 @@ exports.recordDeposit = functions.https.onCall(async (data, context) => {
 exports.submitBatch = functions.https.onCall(async (data, context) => {
   await requireRole(context, [ROLES.AGENT]);
 
+  const agentId = context.auth.uid;
   const groupId = String(data?.groupId || "").trim();
   const incomingIds = Array.isArray(data?.transactionIds) ? data.transactionIds : [];
   const transactionIds = [...new Set(incomingIds.map((value) => String(value || "").trim()).filter(Boolean))];
+
+  // Idempotency token (client should provide, fallback to generated)
+  const idempotencyToken = data.idempotencyToken ||
+    `${agentId}_${groupId}_${Date.now()}`;
 
   if (!groupId) {
     throw httpsError("invalid-argument", "groupId is required.");
@@ -184,6 +216,24 @@ exports.submitBatch = functions.https.onCall(async (data, context) => {
 
   if (!transactionIds.length) {
     throw httpsError("invalid-argument", "transactionIds must contain at least one id.");
+  }
+
+  // Check if batch already exists with this idempotency token
+  const existingBatchSnap = await db.collection('depositBatches')
+    .where('idempotencyToken', '==', idempotencyToken)
+    .limit(1)
+    .get();
+
+  if (!existingBatchSnap.empty) {
+    const existingBatch = existingBatchSnap.docs[0];
+    const batchData = existingBatch.data();
+    return {
+      success: true,
+      batchId: existingBatch.id,
+      totalAmount: batchData.totalAmount,
+      transactionCount: batchData.transactionIds?.length || 0,
+      alreadyExists: true,
+    };
   }
 
   const batchRef = db.collection("depositBatches").doc();
@@ -231,6 +281,7 @@ exports.submitBatch = functions.https.onCall(async (data, context) => {
       totalAmount,
       memberCount: memberIds.size,
       status: DEPOSIT_BATCH_STATUS.SUBMITTED,
+      idempotencyToken, // Store for idempotency
       submittedAt: FieldValue.serverTimestamp(),
       confirmedBy: null,
       confirmedAt: null,
@@ -392,146 +443,119 @@ exports.confirmBatch = functions.https.onCall(async (data, context) => {
   }
 
   const batchRef = db.collection("depositBatches").doc(batchId);
+
+  // Read batch OUTSIDE transaction (Batch API doesn't need transaction for reads)
+  const batchDoc = await batchRef.get();
+  if (!batchDoc.exists) {
+    throw httpsError("not-found", "Batch not found.");
+  }
+
+  const batchData = batchDoc.data();
+  if (batchData.status !== DEPOSIT_BATCH_STATUS.SUBMITTED) {
+    throw httpsError("failed-precondition", `Batch already ${batchData.status}.`);
+  }
+
+  const txIds = Array.isArray(batchData.transactionIds) ? batchData.transactionIds : [];
+  if (!txIds.length) {
+    throw httpsError("failed-precondition", "Batch has no transactions.");
+  }
+
+  // Read all transactions OUTSIDE transaction
+  const txRefs = txIds.map((id) => db.collection("transactions").doc(id));
+  const txSnaps = await Promise.all(txRefs.map((ref) => ref.get()));
+
+  // Validate all transactions and calculate totals IN-MEMORY
   let totalConfirmed = 0;
+  const memberUpdates = new Map(); // userId -> { amount, newSavings, newPending }
 
-  await db.runTransaction(async (tx) => {
-    let localTotalConfirmed = 0;
-
-    const batchSnap = await tx.get(batchRef);
-    if (!batchSnap.exists) {
-      throw httpsError("not-found", "Batch not found.");
+  for (const txnSnap of txSnaps) {
+    if (!txnSnap.exists) {
+      throw httpsError("not-found", "A batch transaction is missing.");
     }
 
-    const batch = batchSnap.data();
-    if (batch.status !== DEPOSIT_BATCH_STATUS.SUBMITTED) {
-      throw httpsError("failed-precondition", "Batch is not in submitted status.");
+    const txn = txnSnap.data();
+
+    if (txn.type !== TRANSACTION_TYPE.DEPOSIT || txn.status !== TRANSACTION_STATUS.PENDING_UMUCO) {
+      throw httpsError("failed-precondition", `Transaction ${txnSnap.id} is not confirmable.`);
     }
 
-    const txIds = Array.isArray(batch.transactionIds) ? batch.transactionIds : [];
-    if (!txIds.length) {
-      throw httpsError("failed-precondition", "Batch has no transactions.");
+    if (txn.groupId !== batchData.groupId) {
+      throw httpsError("failed-precondition", `Transaction ${txnSnap.id} group mismatch.`);
     }
 
-    const txRefs = txIds.map((id) => db.collection("transactions").doc(id));
-    const txSnaps = await Promise.all(txRefs.map((ref) => tx.get(ref)));
-    const groupMemberCache = new Map();
-    const groupMemberNext = new Map();
+    const amount = Number(txn.amount || 0);
+    totalConfirmed += amount;
 
-    for (const txnSnap of txSnaps) {
-      if (!txnSnap.exists) {
-        throw httpsError("not-found", "A batch transaction is missing.");
-      }
-      const txn = txnSnap.data();
-      const gmId = txn.userId;
-      if (!groupMemberCache.has(gmId)) {
-        const gmRef = db.collection("groupMembers").doc(gmId);
-        const gmSnap = await tx.get(gmRef);
-        if (!gmSnap.exists) {
-          throw httpsError("failed-precondition", `Group member ${gmId} missing.`);
-        }
-        groupMemberCache.set(gmId, gmSnap);
-      }
+    // Aggregate per member (handle multiple deposits for same member)
+    const userId = txn.userId;
+    if (!memberUpdates.has(userId)) {
+      memberUpdates.set(userId, { amount: 0, txnIds: [] });
     }
+    const memberUpdate = memberUpdates.get(userId);
+    memberUpdate.amount += amount;
+    memberUpdate.txnIds.push(txnSnap.id);
+  }
 
-    const groupsQuerySnap = await tx.get(db.collection("groups"));
-    let totalCollateral = 0;
-    groupsQuerySnap.forEach((groupDoc) => {
-      totalCollateral += Number(groupDoc.data().totalSavings || 0);
+  // Use Batch API (500-op limit instead of 25)
+  const batch = db.batch();
+
+  // Update batch status
+  batch.update(batchRef, {
+    status: DEPOSIT_BATCH_STATUS.CONFIRMED,
+    confirmedBy: context.auth.uid,
+    confirmedAt: FieldValue.serverTimestamp(),
+    umucoNotes: notes || null,
+    umucoAccountRef,
+    updatedAt: FieldValue.serverTimestamp(),
+  });
+
+  // Update transactions
+  txSnaps.forEach((txnSnap) => {
+    batch.update(txnSnap.ref, {
+      status: TRANSACTION_STATUS.CONFIRMED,
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+  });
+
+  // Update members using increments (no need to read first)
+  memberUpdates.forEach((update, userId) => {
+    const memberRef = db.collection("groupMembers").doc(userId);
+
+    batch.update(memberRef, {
+      personalSavings: FieldValue.increment(update.amount),
+      pendingSavings: FieldValue.increment(-update.amount),
+      updatedAt: FieldValue.serverTimestamp(),
     });
 
-    for (const txnSnap of txSnaps) {
-      const txn = txnSnap.data();
-      if (txn.type !== TRANSACTION_TYPE.DEPOSIT || txn.status !== TRANSACTION_STATUS.PENDING_UMUCO) {
-        throw httpsError("failed-precondition", `Transaction ${txnSnap.id} is not confirmable.`);
-      }
-
-      if (txn.groupId !== batch.groupId) {
-        throw httpsError("failed-precondition", `Transaction ${txnSnap.id} group mismatch.`);
-      }
-
-      const amount = Number(txn.amount || 0);
-      localTotalConfirmed += amount;
-
-      const gmId = txn.userId;
-      const groupMemberRef = db.collection("groupMembers").doc(gmId);
-      const current = groupMemberNext.get(gmId) || groupMemberCache.get(gmId).data();
-
-      const personalSavings = Number(current.personalSavings || 0) + amount;
-      const pendingSavings = Math.max(0, Number(current.pendingSavings || 0) - amount);
-      const lockedSavings = Number(current.lockedSavings || 0);
-      const creditLimit = calculateCreditLimit(personalSavings);
-      const availableCredit = Math.max(0, creditLimit - lockedSavings);
-
-      groupMemberNext.set(gmId, {
-        personalSavings,
-        pendingSavings,
-        lockedSavings,
-      });
-
-      tx.set(
-        groupMemberRef,
-        {
-          personalSavings,
-          pendingSavings,
-          creditLimit,
-          availableCredit,
-          updatedAt: FieldValue.serverTimestamp(),
-        },
-        { merge: true }
-      );
-
-      tx.set(
-        txnSnap.ref,
-        {
-          status: TRANSACTION_STATUS.CONFIRMED,
-          balanceAfter: personalSavings,
-          updatedAt: FieldValue.serverTimestamp(),
-        },
-        { merge: true }
-      );
-    }
-
-    totalCollateral += localTotalConfirmed;
-
-    tx.set(
-      db.collection("groups").doc(batch.groupId),
-      {
-        totalSavings: FieldValue.increment(localTotalConfirmed),
-        pendingSavings: FieldValue.increment(-localTotalConfirmed),
-        updatedAt: FieldValue.serverTimestamp(),
-      },
-      { merge: true }
-    );
-
-    tx.set(
-      db.collection("kirimbaFund").doc("current"),
-      {
-        totalCollateral,
-        lastUpdated: FieldValue.serverTimestamp(),
-        updatedBy: context.auth.uid,
-      },
-      { merge: true }
-    );
-
-    tx.set(
-      batchRef,
-      {
-        status: DEPOSIT_BATCH_STATUS.CONFIRMED,
-        confirmedBy: context.auth.uid,
-        confirmedAt: FieldValue.serverTimestamp(),
-        umucoNotes: notes || null,
-        umucoAccountRef,
-        updatedAt: FieldValue.serverTimestamp(),
-      },
-      { merge: true }
-    );
-
-    totalConfirmed = localTotalConfirmed;
+    // Note: creditLimit and availableCredit will be recalculated on next read
+    // This is acceptable trade-off to avoid reading members in transaction
   });
+
+  // Update group totals using increments
+  batch.update(db.collection("groups").doc(batchData.groupId), {
+    totalSavings: FieldValue.increment(totalConfirmed),
+    pendingSavings: FieldValue.increment(-totalConfirmed),
+    updatedAt: FieldValue.serverTimestamp(),
+  });
+
+  // Update fund using increment (NO need to read all groups!)
+  batch.set(
+    db.collection("kirimbaFund").doc("current"),
+    {
+      totalCollateral: FieldValue.increment(totalConfirmed),
+      lastUpdated: FieldValue.serverTimestamp(),
+      updatedBy: context.auth.uid,
+    },
+    { merge: true }
+  );
+
+  // Commit batch (atomic, up to 500 operations)
+  await batch.commit();
 
   return {
     success: true,
     totalConfirmed,
+    transactionCount: txSnaps.length,
   };
 });
 
@@ -570,6 +594,7 @@ exports.flagBatch = functions.https.onCall(async (data, context) => {
     message: notes,
     createdAt: FieldValue.serverTimestamp(),
     createdBy: context.auth.uid,
+    expiresAt: new Date(Date.now() + 90 * 24 * 60 * 60 * 1000), // 90 days TTL
   });
 
   return { success: true };

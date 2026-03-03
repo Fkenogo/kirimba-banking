@@ -4,6 +4,7 @@ const { FieldValue } = require("firebase-admin/firestore");
 const members = require("./src/members");
 const savings = require("./src/savings");
 const loans = require("./src/loans");
+const scheduledFunctions = require("./src/scheduledFunctions");
 
 if (!admin.apps.length) {
   admin.initializeApp();
@@ -57,7 +58,7 @@ exports.onUserCreate = functions.auth.user().onCreate(async (user) => {
         )
       );
     } else {
-      console.log(`User profile already exists for ${uid}, skipping create`);
+      console.log('User profile already exists, skipping create');
     }
 
     if (!walletSnap.exists) {
@@ -73,17 +74,17 @@ exports.onUserCreate = functions.auth.user().onCreate(async (user) => {
         )
       );
     } else {
-      console.log(`Wallet already exists for ${uid}, skipping create`);
+      console.log('Wallet already exists, skipping create');
     }
 
     if (writes.length) {
       await Promise.all(writes);
-      console.log(`User initialization completed for ${uid}`);
+      console.log('User initialization completed');
     } else {
-      console.log(`No initialization needed for ${uid}`);
+      console.log('No initialization needed');
     }
   } catch (error) {
-    console.error(`Error creating user/wallet for ${uid}:`, error);
+    console.error('Error creating user/wallet:', error.message);
   }
 });
 
@@ -110,3 +111,6 @@ exports.recordRepayment = loans.recordRepayment;
 exports.markLoanDefaulted = loans.markLoanDefaulted;
 exports.getMemberLoans = loans.getMemberLoans;
 exports.getLoansByGroup = loans.getLoansByGroup;
+
+// Scheduled functions
+exports.deleteExpiredNotifications = scheduledFunctions.deleteExpiredNotifications;

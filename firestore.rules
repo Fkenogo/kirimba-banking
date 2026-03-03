@@ -47,9 +47,14 @@ service cloud.firestore {
       allow write: if false;
     }
 
-    // Groups: readable by relevant roles, writable only by backend.
+    // Groups: readable only by members of that group or elevated roles
     match /groups/{groupId} {
-      allow read: if isSignedIn() && (isAdmin() || isAgent() || isUmuco() || isLeader() || isMember());
+      allow read: if isSignedIn() && (
+        isAdmin() ||
+        isAgent() ||
+        isUmuco() ||
+        get(/databases/$(database)/documents/groups/$(groupId)).data.memberIds.hasAny([request.auth.uid])
+      );
       allow write: if false;
 
       match /joinRequests/{joinRequestId} {
@@ -64,12 +69,22 @@ service cloud.firestore {
     }
 
     match /transactions/{txnId} {
-      allow read: if isSignedIn() && (isAdmin() || isAgent() || isUmuco() || isLeader() || isMember());
+      allow read: if isSignedIn() && (
+        isAdmin() ||
+        isAgent() ||
+        isUmuco() ||
+        resource.data.userId == request.auth.uid
+      );
       allow write: if false;
     }
 
     match /loans/{loanId} {
-      allow read: if isSignedIn() && (isAdmin() || isAgent() || isLeader() || isMember());
+      allow read: if isSignedIn() && (
+        isAdmin() ||
+        isAgent() ||
+        isUmuco() ||
+        resource.data.userId == request.auth.uid
+      );
       allow write: if false;
     }
 
