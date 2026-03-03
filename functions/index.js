@@ -114,3 +114,7 @@ exports.getLoansByGroup = loans.getLoansByGroup;
 
 // Scheduled functions
 exports.deleteExpiredNotifications = scheduledFunctions.deleteExpiredNotifications;
+
+const agents = require("./src/agents");
+exports.provisionAgent    = agents.provisionAgent;
+exports.assignAgentToGroup = agents.assignAgentToGroup;

@@ -25,25 +25,12 @@ function httpsError(code, message) {
   return new functions.https.HttpsError(code, message);
 }
 
-async function getUserRole(uid, token) {
-  if (token && token.role) {
-    return token.role;
-  }
-
-  const userSnap = await db.collection("users").doc(uid).get();
-  if (!userSnap.exists) {
-    return null;
-  }
-
-  return userSnap.data().role || null;
-}
-
-async function requireRole(context, allowedRoles) {
+function requireRole(context, allowedRoles) {
   if (!context.auth || !context.auth.uid) {
     throw httpsError("unauthenticated", "Authentication required.");
   }
 
-  const role = await getUserRole(context.auth.uid, context.auth.token);
+  const role = context.auth.token?.role;
   if (!role || !allowedRoles.includes(role)) {
     throw httpsError("permission-denied", "Insufficient permissions.");
   }

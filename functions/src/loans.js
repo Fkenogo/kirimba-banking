@@ -32,25 +32,12 @@ function parseAmount(rawAmount) {
   return Math.round(amount);
 }
 
-async function getUserRole(uid, token) {
-  if (token && token.role) {
-    return token.role;
-  }
-
-  const userSnap = await db.collection("users").doc(uid).get();
-  if (!userSnap.exists) {
-    return null;
-  }
-
-  return userSnap.data().role || null;
-}
-
-async function requireRole(context, allowedRoles) {
+function requireRole(context, allowedRoles) {
   if (!context.auth || !context.auth.uid) {
     throw httpsError("unauthenticated", "Authentication required.");
   }
 
-  const role = await getUserRole(context.auth.uid, context.auth.token);
+  const role = context.auth.token?.role;
   if (!role || !allowedRoles.includes(role)) {
     throw httpsError("permission-denied", "Insufficient permissions.");
   }
@@ -61,6 +48,11 @@ async function requireRole(context, allowedRoles) {
 async function requireActiveMember(context) {
   if (!context.auth || !context.auth.uid) {
     throw httpsError("unauthenticated", "Authentication required.");
+  }
+
+  const role = context.auth.token?.role;
+  if (role !== ROLES.MEMBER && role !== ROLES.LEADER) {
+    throw httpsError("permission-denied", "Member account required.");
   }
 
   const uid = context.auth.uid;
@@ -77,10 +69,6 @@ async function requireActiveMember(context) {
 
   const user = userSnap.data();
   const groupMember = gmSnap.data();
-  const role = user.role;
-  if (role !== ROLES.MEMBER && role !== ROLES.LEADER) {
-    throw httpsError("permission-denied", "Member account required.");
-  }
   if (user.status !== USER_STATUS.ACTIVE) {
     throw httpsError("failed-precondition", "Member account must be active.");
   }

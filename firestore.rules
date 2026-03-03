@@ -120,6 +120,11 @@ service cloud.firestore {
       allow write: if false;
     }
 
+    match /agents/{agentId} {
+      allow read: if isAdmin() || isOwner(agentId) || isAgent();
+      allow write: if false;
+    }
+
     match /{document=**} {
       allow read, write: if false;
     }

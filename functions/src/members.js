@@ -29,25 +29,12 @@ function httpsError(code, message) {
   return new functions.https.HttpsError(code, message);
 }
 
-async function getUserRole(uid, token) {
-  if (token && token.role) {
-    return token.role;
-  }
-
-  const userSnap = await db.collection("users").doc(uid).get();
-  if (!userSnap.exists) {
-    return null;
-  }
-
-  return userSnap.data().role || null;
-}
-
-async function requireRole(context, allowedRoles) {
+function requireRole(context, allowedRoles) {
   if (!context.auth || !context.auth.uid) {
     throw httpsError("unauthenticated", "Authentication required.");
   }
 
-  const role = await getUserRole(context.auth.uid, context.auth.token);
+  const role = context.auth.token?.role;
   if (!role || !allowedRoles.includes(role)) {
     throw httpsError("permission-denied", "Insufficient permissions.");
   }
@@ -60,16 +47,17 @@ async function requireActiveMember(context) {
     throw httpsError("unauthenticated", "Authentication required.");
   }
 
+  const role = context.auth.token?.role;
+  if (role !== ROLES.MEMBER && role !== ROLES.LEADER) {
+    throw httpsError("permission-denied", "Member account required.");
+  }
+
   const userSnap = await db.collection("users").doc(context.auth.uid).get();
   if (!userSnap.exists) {
     throw httpsError("not-found", "User profile not found.");
   }
 
   const user = userSnap.data();
-  if (user.role !== ROLES.MEMBER && user.role !== ROLES.LEADER) {
-    throw httpsError("permission-denied", "Member account required.");
-  }
-
   if (user.status !== USER_STATUS.ACTIVE) {
     throw httpsError("failed-precondition", "Member account must be active.");
   }
