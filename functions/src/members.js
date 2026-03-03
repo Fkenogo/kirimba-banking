@@ -115,7 +115,7 @@ exports.registerMember = functions.https.onCall(async (data) => {
       throw httpsError("already-exists", "Phone is already registered.");
     }
 
-    const pinHash = hashPIN(pin);
+    const pinHash = await hashPIN(pin);
     const createdAuthUser = await auth.createUser({
       email: `${phone}@kirimba.app`,
       password: pinHash,
@@ -489,7 +489,7 @@ exports.resetPIN = functions.https.onCall(async (data, context) => {
     throw httpsError("invalid-argument", "userId and a valid 4-digit newPIN are required.");
   }
 
-  const pinHash = hashPIN(newPIN);
+  const pinHash = await hashPIN(newPIN);
   await auth.updateUser(userId, { password: pinHash });
   await db.collection("users").doc(userId).set({ pinHash }, { merge: true });
 
