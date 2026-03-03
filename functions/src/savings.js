@@ -206,9 +206,13 @@ exports.submitBatch = functions.https.onCall(async (data, context) => {
   const incomingIds = Array.isArray(data?.transactionIds) ? data.transactionIds : [];
   const transactionIds = [...new Set(incomingIds.map((value) => String(value || "").trim()).filter(Boolean))];
 
-  // Idempotency token (client should provide, fallback to generated)
-  const idempotencyToken = data.idempotencyToken ||
-    `${agentId}_${groupId}_${Date.now()}`;
+  const { idempotencyToken } = data;
+  if (!idempotencyToken) {
+    throw new functions.https.HttpsError(
+      'invalid-argument',
+      'idempotencyToken is required'
+    );
+  }
 
   if (!groupId) {
     throw httpsError("invalid-argument", "groupId is required.");
