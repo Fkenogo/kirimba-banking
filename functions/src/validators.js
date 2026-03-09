@@ -9,12 +9,24 @@ function normalizePhone(phone) {
     return "";
   }
 
-  const trimmed = phone.trim();
+  const compact = phone.trim().replace(/[\s-]+/g, "");
+  const trimmed = compact;
   if (trimmed.startsWith("+")) {
     return trimmed;
   }
 
   return `+${trimmed}`;
+}
+
+function isValidProvisioningPhone(phone) {
+  const normalized = normalizePhone(phone);
+  const supportedPatterns = [
+    /^\+257\d{8}$/, // Burundi: +257 + 8 digits
+    /^\+250\d{9}$/, // Rwanda: +250 + 9 digits
+    /^\+256\d{9}$/, // Uganda: +256 + 9 digits
+  ];
+
+  return supportedPatterns.some((pattern) => pattern.test(normalized));
 }
 
 function isValidBurundiPhone(phone) {
@@ -23,7 +35,12 @@ function isValidBurundiPhone(phone) {
 }
 
 function isValidPin(pin) {
-  return typeof pin === "string" && /^\d{4}$/.test(pin);
+  return typeof pin === "string" && /^\d{6}$/.test(pin);
+}
+
+function phoneToAuthEmail(phone) {
+  const normalized = normalizePhone(phone);
+  return `${normalized}@kirimba.app`;
 }
 
 function assert(condition, message) {
@@ -36,6 +53,8 @@ module.exports = {
   assert,
   isNonEmptyString,
   normalizePhone,
+  isValidProvisioningPhone,
   isValidBurundiPhone,
   isValidPin,
+  phoneToAuthEmail,
 };

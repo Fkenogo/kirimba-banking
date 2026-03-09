@@ -1,9 +1,15 @@
 import {
-  createUserWithEmailAndPassword,
   signInWithEmailAndPassword,
   signOut,
 } from "firebase/auth";
-import { auth, authRuntime } from "./firebase";
+import { httpsCallable } from "firebase/functions";
+import { auth, authRuntime, functions } from "./firebase";
+import {
+  isValidSupportedPhone,
+  normalizePhoneE164,
+  phoneToAuthEmail,
+  PHONE_VALIDATION_MESSAGE,
+} from "../utils/phoneAuth";
 
 function normalizeAuthError(error) {
   if (!error || typeof error !== "object") {
@@ -24,17 +30,45 @@ function normalizeAuthError(error) {
   return error;
 }
 
-export async function signUpAccount(email, password) {
+function getCallableMessage(error, fallback) {
+  const fromDetails = typeof error?.details === "string"
+    ? error.details
+    : error?.details?.message;
+  const fromMessage = typeof error?.message === "string" ? error.message : "";
+  const message = (fromDetails || fromMessage || "").trim();
+  if (!message || message.toLowerCase() === "internal") {
+    return fallback;
+  }
+  return message;
+}
+
+export async function registerMemberAccount({ fullName, phone, pin, email }) {
+  const normalizedPhone = normalizePhoneE164(phone);
+  if (!isValidSupportedPhone(normalizedPhone)) {
+    throw new Error(PHONE_VALIDATION_MESSAGE);
+  }
+
+  const registerMember = httpsCallable(functions, "registerMember");
   try {
-    return await createUserWithEmailAndPassword(auth, email, password);
+    await registerMember({
+      fullName: String(fullName || "").trim(),
+      phone: normalizedPhone,
+      pin: String(pin || ""),
+      email: email ? String(email).trim().toLowerCase() : null,
+    });
   } catch (error) {
-    throw normalizeAuthError(error);
+    throw new Error(getCallableMessage(error, "Failed to register member account."));
   }
 }
 
-export async function signInAccount(email, password) {
+export async function signInWithPhonePIN(phone, pin) {
+  const normalizedPhone = normalizePhoneE164(phone);
+  if (!isValidSupportedPhone(normalizedPhone)) {
+    throw new Error(PHONE_VALIDATION_MESSAGE);
+  }
+
   try {
-    return await signInWithEmailAndPassword(auth, email, password);
+    return await signInWithEmailAndPassword(auth, phoneToAuthEmail(normalizedPhone), pin);
   } catch (error) {
     throw normalizeAuthError(error);
   }

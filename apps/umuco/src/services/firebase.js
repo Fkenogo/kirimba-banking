@@ -1,5 +1,7 @@
 import { getApp, getApps, initializeApp } from "firebase/app";
 import { connectAuthEmulator, getAuth } from "firebase/auth";
+import { connectFirestoreEmulator, getFirestore } from "firebase/firestore";
+import { connectFunctionsEmulator, getFunctions } from "firebase/functions";
 
 const requiredEnvVars = [
   "VITE_FIREBASE_API_KEY",
@@ -36,6 +38,8 @@ const firebaseConfig = {
 
 const app = getApps().length ? getApp() : initializeApp(firebaseConfig);
 const auth = getAuth(app);
+const db = getFirestore(app);
+const functions = getFunctions(app);
 
 const emulatorHost = import.meta.env.VITE_FIREBASE_AUTH_EMULATOR_HOST || "127.0.0.1:9099";
 const isLocalBrowser =
@@ -45,6 +49,8 @@ const useEmulators = import.meta.env.VITE_USE_FIREBASE_EMULATORS === "true" && i
 
 if (useEmulators && !auth.emulatorConfig) {
   connectAuthEmulator(auth, `http://${emulatorHost}`, { disableWarnings: true });
+  connectFirestoreEmulator(db, "127.0.0.1", 8080);
+  connectFunctionsEmulator(functions, "127.0.0.1", 5001);
 }
 
 if (import.meta.env.DEV && import.meta.env.VITE_USE_FIREBASE_EMULATORS === "true" && !isLocalBrowser) {
@@ -58,4 +64,4 @@ const authRuntime = {
   emulatorHost,
 };
 
-export { app, auth, authRuntime };
+export { app, auth, authRuntime, db, functions };

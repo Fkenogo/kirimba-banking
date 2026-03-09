@@ -65,10 +65,13 @@ exports.onUserCreate = functions.auth.user().onCreate(async (user) => {
       writes.push(
         walletRef.set(
           {
-            uid,
-            balance: 0,
-            currency: "BIF",
+            userId: uid,
+            balanceConfirmed: 0,
+            balancePending: 0,
+            balanceLocked: 0,
+            availableBalance: 0,
             createdAt: FieldValue.serverTimestamp(),
+            updatedAt: FieldValue.serverTimestamp(),
           },
           { merge: true }
         )
@@ -95,15 +98,22 @@ exports.createGroup = members.createGroup;
 exports.approveGroup = members.approveGroup;
 exports.joinGroup = members.joinGroup;
 exports.approveJoinRequest = members.approveJoinRequest;
+exports.rejectJoinRequest = members.rejectJoinRequest;
 exports.resetPIN = members.resetPIN;
 exports.getPendingApprovals = members.getPendingApprovals;
+exports.joinGroupByInviteCode = members.joinGroupByInviteCode;
+exports.setMemberInstitution = members.setMemberInstitution;
+exports.getGroupMembers = members.getGroupMembers;
+exports.initiateGroupSplit = members.initiateGroupSplit;
 
 exports.recordDeposit = savings.recordDeposit;
 exports.recordWithdrawal = savings.recordWithdrawal;
+exports.adminApproveDeposits = savings.adminApproveDeposits;
 exports.submitBatch = savings.submitBatch;
 exports.confirmBatch = savings.confirmBatch;
 exports.flagBatch = savings.flagBatch;
 exports.getBatchesForGroup = savings.getBatchesForGroup;
+exports.getAgentLedger = savings.getAgentLedger;
 
 exports.requestLoan = loans.requestLoan;
 exports.disburseLoan = loans.disburseLoan;
@@ -111,6 +121,12 @@ exports.recordRepayment = loans.recordRepayment;
 exports.markLoanDefaulted = loans.markLoanDefaulted;
 exports.getMemberLoans = loans.getMemberLoans;
 exports.getLoansByGroup = loans.getLoansByGroup;
+exports.getLoansDashboard = loans.getLoansDashboard;
+exports.getLoanDetails = loans.getLoanDetails;
+exports.approveLoan = loans.approveLoan;
+exports.adminDisburseLoan = loans.adminDisburseLoan;
+exports.adminMarkRepayment = loans.adminMarkRepayment;
+exports.adminMarkLoanDefault = loans.adminMarkLoanDefault;
 
 // Scheduled functions
 exports.deleteExpiredNotifications = scheduledFunctions.deleteExpiredNotifications;
@@ -118,3 +134,15 @@ exports.deleteExpiredNotifications = scheduledFunctions.deleteExpiredNotificatio
 const agents = require("./src/agents");
 exports.provisionAgent    = agents.provisionAgent;
 exports.assignAgentToGroup = agents.assignAgentToGroup;
+exports.provisionAdmin = agents.provisionAdmin;
+exports.provisionInstitutionUser = agents.provisionInstitutionUser;
+
+const groups = require("./src/groups");
+exports.adminSetGroupBorrowPause = groups.adminSetGroupBorrowPause;
+
+const reconciliation = require("./src/reconciliation");
+exports.closeAgentDay = reconciliation.closeAgentDay;
+exports.adminUpdateReconciliation = reconciliation.adminUpdateReconciliation;
+exports.requestSettlement = reconciliation.requestSettlement;
+exports.approveSettlement = reconciliation.approveSettlement;
+exports.markSettlementPaid = reconciliation.markSettlementPaid;

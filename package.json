@@ -19,6 +19,8 @@
     "build:umuco": "npm --workspace apps/umuco run build",
     "build:functions": "npm --workspace functions run deploy -- --only functions",
     "build:all": "npm run build:member && npm run build:agent && npm run build:admin && npm run build:umuco",
+    "seed:test-env": "node scripts/seed-kirimba-test-env.js",
+    "seed:test-env:reset": "node scripts/seed-kirimba-test-env.js --reset",
     "emulators": "firebase emulators:start",
     "emulators:core": "firebase emulators:start --only auth,firestore,functions",
     "emulators:auth": "firebase emulators:start --only auth",

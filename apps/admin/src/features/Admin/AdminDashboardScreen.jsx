@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { signOutAccount } from "../../services/auth";
 
-export default function AdminDashboardScreen({ user }) {
+export default function AdminDashboardScreen({ user, role }) {
   const navigate = useNavigate();
   const [isSigningOut, setIsSigningOut] = useState(false);
   const [error, setError] = useState("");
@@ -43,6 +43,60 @@ export default function AdminDashboardScreen({ user }) {
 
           <div className="mt-8">
             <h2 className="text-sm font-medium uppercase tracking-wide text-slate-500">
+              Deposits
+            </h2>
+            <div className="mt-3 grid grid-cols-1 gap-3">
+              <button
+                type="button"
+                onClick={() => navigate("/admin/deposits/pending")}
+                className="flex flex-col rounded-lg border border-slate-200 bg-white p-4 text-left hover:border-slate-400 hover:shadow-sm transition-all"
+              >
+                <span className="text-base font-medium text-slate-900">Pending Deposits</span>
+                <span className="mt-1 text-sm text-slate-500">
+                  Review and approve agent-recorded deposits
+                </span>
+              </button>
+            </div>
+          </div>
+
+          <div className="mt-8">
+            <h2 className="text-sm font-medium uppercase tracking-wide text-slate-500">
+              Loan Operations
+            </h2>
+            <div className="mt-3 grid grid-cols-1 gap-3">
+              <button
+                type="button"
+                onClick={() => navigate("/admin/loans")}
+                className="flex flex-col rounded-lg border border-slate-200 bg-white p-4 text-left hover:border-slate-400 hover:shadow-sm transition-all"
+              >
+                <span className="text-base font-medium text-slate-900">Loan Operations Console</span>
+                <span className="mt-1 text-sm text-slate-500">
+                  Manage pending, active, overdue, and defaulted loans
+                </span>
+              </button>
+            </div>
+          </div>
+
+          <div className="mt-8">
+            <h2 className="text-sm font-medium uppercase tracking-wide text-slate-500">
+              Approvals
+            </h2>
+            <div className="mt-3 grid grid-cols-1 gap-3">
+              <button
+                type="button"
+                onClick={() => navigate("/admin/approvals")}
+                className="flex flex-col rounded-lg border border-slate-200 bg-white p-4 text-left hover:border-slate-400 hover:shadow-sm transition-all"
+              >
+                <span className="text-base font-medium text-slate-900">Pending Members & Groups</span>
+                <span className="mt-1 text-sm text-slate-500">
+                  Approve or reject new members and approve pending groups
+                </span>
+              </button>
+            </div>
+          </div>
+
+          <div className="mt-8">
+            <h2 className="text-sm font-medium uppercase tracking-wide text-slate-500">
               Agent Management
             </h2>
             <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
@@ -64,6 +118,55 @@ export default function AdminDashboardScreen({ user }) {
                 <span className="text-base font-medium text-slate-900">View Agents</span>
                 <span className="mt-1 text-sm text-slate-500">
                   List all agents and manage group assignments
+                </span>
+              </button>
+              <button
+                type="button"
+                onClick={() => navigate("/admin/agents/assign")}
+                className="flex flex-col rounded-lg border border-slate-200 bg-white p-4 text-left hover:border-slate-400 hover:shadow-sm transition-all"
+              >
+                <span className="text-base font-medium text-slate-900">Assign Agent</span>
+                <span className="mt-1 text-sm text-slate-500">
+                  Link active agents to active groups
+                </span>
+              </button>
+              <button
+                type="button"
+                onClick={() => navigate("/admin/agents/reconciliation")}
+                className="flex flex-col rounded-lg border border-slate-200 bg-white p-4 text-left hover:border-slate-400 hover:shadow-sm transition-all"
+              >
+                <span className="text-base font-medium text-slate-900">Agent Reconciliations</span>
+                <span className="mt-1 text-sm text-slate-500">
+                  Review and mark submitted close-day reports
+                </span>
+              </button>
+            </div>
+          </div>
+
+          <div className="mt-8">
+            <h2 className="text-sm font-medium uppercase tracking-wide text-slate-500">
+              User Provisioning
+            </h2>
+            <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <button
+                type="button"
+                onClick={() => navigate("/admin/admins/new")}
+                disabled={role !== "super_admin"}
+                className="flex flex-col rounded-lg border border-slate-200 bg-white p-4 text-left hover:border-slate-400 hover:shadow-sm transition-all disabled:opacity-60 disabled:hover:border-slate-200 disabled:hover:shadow-none"
+              >
+                <span className="text-base font-medium text-slate-900">Create Admin</span>
+                <span className="mt-1 text-sm text-slate-500">
+                  Super admin only. Provision an internal admin account
+                </span>
+              </button>
+              <button
+                type="button"
+                onClick={() => navigate("/admin/institutions/new")}
+                className="flex flex-col rounded-lg border border-slate-200 bg-white p-4 text-left hover:border-slate-400 hover:shadow-sm transition-all"
+              >
+                <span className="text-base font-medium text-slate-900">Create Institution User</span>
+                <span className="mt-1 text-sm text-slate-500">
+                  Provision partner institution staff accounts
                 </span>
               </button>
             </div>

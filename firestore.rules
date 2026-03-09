@@ -12,7 +12,7 @@ service cloud.firestore {
     }
 
     function isAdmin() {
-      return role() == "super_admin" || role() == "finance";
+      return role() == "super_admin" || role() == "admin" || role() == "finance";
     }
 
     function isAgent() {
@@ -47,12 +47,19 @@ service cloud.firestore {
       allow write: if false;
     }
 
-    // Groups: readable only by members of that group or elevated roles
+    // Groups: readable only by members of that group or elevated roles.
+    // borrowingPaused / pauseReason / pausedAt / pausedBy are managed by
+    // the adminSetGroupBorrowPause callable (Admin SDK, bypasses rules).
+    // isAdmin() read access below covers those fields for admin UI queries.
     match /groups/{groupId} {
       allow read: if isSignedIn() && (
         isAdmin() ||
         isAgent() ||
         isUmuco() ||
+        (
+          isLeader() &&
+          resource.data.leaderId == request.auth.uid
+        ) ||
         (
           exists(/databases/$(database)/documents/groupMembers/$(request.auth.uid)) &&
           get(/databases/$(database)/documents/groupMembers/$(request.auth.uid)).data.groupId == groupId
@@ -122,6 +129,41 @@ service cloud.firestore {
 
     match /agents/{agentId} {
       allow read: if isAdmin() || isOwner(agentId) || isAgent();
+      allow write: if false;
+    }
+
+    match /agentLedgers/{ledgerId} {
+      allow read: if isAdmin() || (isAgent() && resource.data.agentId == request.auth.uid);
+      allow write: if false;
+    }
+
+    match /config/{configId} {
+      allow read: if isAdmin();
+      allow write: if false;
+    }
+
+    match /agentReconciliations/{reconcId} {
+      allow read: if isAdmin() || (isAgent() && resource.data.agentId == request.auth.uid);
+      allow write: if false;
+    }
+
+    match /agentSettlements/{settlementId} {
+      allow read: if isAdmin() || (isAgent() && resource.data.agentId == request.auth.uid);
+      allow write: if false;
+    }
+
+    match /institutions/{institutionId} {
+      allow read: if isSignedIn();
+      allow write: if false;
+    }
+
+    match /kirimbaPools/{poolId} {
+      allow read: if isSignedIn() && isAdmin();
+      allow write: if false;
+    }
+
+    match /institutionPools/{institutionId} {
+      allow read: if isSignedIn() && (isAdmin() || isUmuco());
       allow write: if false;
     }
 

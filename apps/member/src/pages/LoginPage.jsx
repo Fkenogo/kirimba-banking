@@ -1,11 +1,18 @@
 import { useMemo, useState } from "react";
-import { signInAccount, signUpAccount } from "../services/auth";
+import { registerMemberAccount, signInWithPhonePIN } from "../services/auth";
+import {
+  isValidSupportedPhone,
+  normalizePhoneE164,
+  PHONE_VALIDATION_MESSAGE,
+} from "../utils/phoneAuth";
 
 export default function LoginPage() {
   const [mode, setMode] = useState("login");
+  const [fullName, setFullName] = useState("");
+  const [phone, setPhone] = useState("");
   const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [confirmPassword, setConfirmPassword] = useState("");
+  const [pin, setPin] = useState("");
+  const [confirmPin, setConfirmPin] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
@@ -17,18 +24,42 @@ export default function LoginPage() {
     setError("");
     setMessage("");
 
-    if (isSignup && password !== confirmPassword) {
-      setError("Passwords do not match.");
+    if (!/^\d{6}$/.test(pin)) {
+      setError("PIN must be exactly 6 digits.");
+      return;
+    }
+
+    const normalizedPhone = normalizePhoneE164(phone);
+    if (!isValidSupportedPhone(normalizedPhone)) {
+      setError(PHONE_VALIDATION_MESSAGE);
+      return;
+    }
+
+    if (isSignup && pin !== confirmPin) {
+      setError("PIN entries do not match.");
+      return;
+    }
+
+    if (isSignup && fullName.trim().length < 3) {
+      setError("Full name is required (min 3 characters).");
       return;
     }
 
     setIsSubmitting(true);
     try {
       if (isSignup) {
-        await signUpAccount(email.trim(), password);
-        setMessage("Account created. Pending approval status is set by backend trigger.");
+        await registerMemberAccount({
+          fullName: fullName.trim(),
+          phone: normalizedPhone,
+          email: email.trim() || null,
+          pin,
+        });
+        setMessage("Account created. Pending approval by admin.");
+        setMode("login");
+        setPin("");
+        setConfirmPin("");
       } else {
-        await signInAccount(email.trim(), password);
+        await signInWithPhonePIN(normalizedPhone, pin);
       }
     } catch (err) {
       setError(err.message || "Authentication failed.");
@@ -42,7 +73,7 @@ export default function LoginPage() {
       <section className="w-full max-w-md rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
         <h1 className="text-xl font-semibold text-slate-900">KIRIMBA Member</h1>
         <p className="mt-2 text-sm text-slate-600">
-          {isSignup ? "Create account" : "Login"} with Firebase Authentication
+          {isSignup ? "Create account" : "Login"} with phone number and PIN
         </p>
 
         <div className="mt-4 grid grid-cols-2 rounded-md bg-slate-100 p-1">
@@ -63,38 +94,74 @@ export default function LoginPage() {
         </div>
 
         <form onSubmit={handleSubmit} className="mt-4 space-y-3">
-          <label className="block text-sm text-slate-700">
-            Email
-            <input
-              type="email"
-              required
-              value={email}
-              onChange={(event) => setEmail(event.target.value)}
-              className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
-            />
-          </label>
+          {isSignup ? (
+            <label className="block text-sm text-slate-700">
+              Full Name
+              <input
+                type="text"
+                required
+                value={fullName}
+                onChange={(event) => setFullName(event.target.value)}
+                className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+              />
+            </label>
+          ) : null}
 
           <label className="block text-sm text-slate-700">
-            Password
+            Phone Number
             <input
-              type="password"
-              minLength={8}
+              type="tel"
               required
-              value={password}
-              onChange={(event) => setPassword(event.target.value)}
+              value={phone}
+              onChange={(event) => setPhone(event.target.value)}
+              placeholder="+25766123456"
               className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
             />
+            <span className="mt-1 block text-xs text-slate-500">
+              Burundi: +25766123456, Rwanda: +250788123456, Uganda: +256788123456
+            </span>
           </label>
 
           {isSignup ? (
             <label className="block text-sm text-slate-700">
-              Confirm password
+              Email (optional)
+              <input
+                type="email"
+                value={email}
+                onChange={(event) => setEmail(event.target.value)}
+                className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+              />
+            </label>
+          ) : null}
+
+          <label className="block text-sm text-slate-700">
+            PIN
+            <input
+              type="password"
+              inputMode="numeric"
+              pattern="\d{6}"
+              minLength={6}
+              maxLength={6}
+              required
+              value={pin}
+              onChange={(event) => setPin(event.target.value)}
+              className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+            />
+            <span className="mt-1 block text-xs text-slate-500">Use a 6-digit PIN.</span>
+          </label>
+
+          {isSignup ? (
+            <label className="block text-sm text-slate-700">
+              Confirm PIN
               <input
                 type="password"
-                minLength={8}
+                inputMode="numeric"
+                pattern="\d{6}"
+                minLength={6}
+                maxLength={6}
                 required
-                value={confirmPassword}
-                onChange={(event) => setConfirmPassword(event.target.value)}
+                value={confirmPin}
+                onChange={(event) => setConfirmPin(event.target.value)}
                 className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
               />
             </label>
@@ -105,11 +172,7 @@ export default function LoginPage() {
             disabled={isSubmitting}
             className="w-full rounded-md bg-slate-900 px-4 py-2 text-sm font-medium text-white disabled:opacity-60"
           >
-            {isSubmitting
-              ? "Please wait..."
-              : isSignup
-              ? "Create account"
-              : "Login"}
+            {isSubmitting ? "Please wait..." : isSignup ? "Create account" : "Login"}
           </button>
         </form>
 

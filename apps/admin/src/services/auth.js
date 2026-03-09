@@ -1,9 +1,11 @@
-import {
-  createUserWithEmailAndPassword,
-  signInWithEmailAndPassword,
-  signOut,
-} from "firebase/auth";
+import { signInWithEmailAndPassword, signOut } from "firebase/auth";
 import { auth, authRuntime } from "./firebase";
+import {
+  isValidSupportedPhone,
+  normalizePhoneE164,
+  phoneToAuthEmail,
+  PHONE_VALIDATION_MESSAGE,
+} from "../utils/phone";
 
 function normalizeAuthError(error) {
   if (!error || typeof error !== "object") {
@@ -24,17 +26,22 @@ function normalizeAuthError(error) {
   return error;
 }
 
-export async function signUpAccount(email, password) {
+export async function signInWithPhonePIN(phone, pin) {
+  const normalizedPhone = normalizePhoneE164(phone);
+  if (!isValidSupportedPhone(normalizedPhone)) {
+    throw new Error(PHONE_VALIDATION_MESSAGE);
+  }
+
   try {
-    return await createUserWithEmailAndPassword(auth, email, password);
+    return await signInWithEmailAndPassword(auth, phoneToAuthEmail(normalizedPhone), pin);
   } catch (error) {
     throw normalizeAuthError(error);
   }
 }
 
-export async function signInAccount(email, password) {
+export async function signInWithEmailPIN(email, pin) {
   try {
-    return await signInWithEmailAndPassword(auth, email, password);
+    return await signInWithEmailAndPassword(auth, String(email || "").trim(), pin);
   } catch (error) {
     throw normalizeAuthError(error);
   }

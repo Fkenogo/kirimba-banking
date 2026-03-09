@@ -10,8 +10,10 @@ const {
   TRANSACTION_TYPE,
   TRANSACTION_STATUS,
   DEPOSIT_BATCH_STATUS,
+  LEDGER_TYPE,
+  LEDGER_STATUS,
 } = require("./constants");
-const { calculateCreditLimit, generateReceiptNo } = require("./utils");
+const { generateReceiptNo } = require("./utils");
 
 if (!admin.apps.length) {
   admin.initializeApp();
@@ -90,27 +92,132 @@ async function getActiveMemberAndGroup(userId) {
   };
 }
 
+/**
+ * Reads the fee/commission config from config/fees within a transaction.
+ * Returns zero values if the doc doesn't exist (fees are optional).
+ */
+async function getFeesConfig(tx) {
+  const snap = await tx.get(db.collection("config").doc("fees"));
+  if (!snap.exists) {
+    return {
+      depositFeeFlat: 0,
+      withdrawFeeFlat: 0,
+      agentCommissionDepositFlat: 0,
+      agentCommissionWithdrawFlat: 0,
+    };
+  }
+  const d = snap.data();
+  return {
+    depositFeeFlat: Math.round(Number(d.depositFeeFlat || 0)),
+    withdrawFeeFlat: Math.round(Number(d.withdrawFeeFlat || 0)),
+    agentCommissionDepositFlat: Math.round(Number(d.agentCommissionDepositFlat || 0)),
+    agentCommissionWithdrawFlat: Math.round(Number(d.agentCommissionWithdrawFlat || 0)),
+  };
+}
+
+/**
+ * Idempotently writes fee and commission ledger entries inside an existing Firestore
+ * transaction. Uses deterministic doc IDs (transactionId_fee / transactionId_commission)
+ * so retries do not create duplicate entries.
+ *
+ * Must be called AFTER all transaction reads are done (Firestore read-before-write rule).
+ */
+async function readLedgerRefs(tx, transactionId) {
+  const feeRef = db.collection("agentLedgers").doc(`${transactionId}_fee`);
+  const commissionRef = db.collection("agentLedgers").doc(`${transactionId}_commission`);
+  const [feeSnap, commissionSnap] = await Promise.all([
+    tx.get(feeRef),
+    tx.get(commissionRef),
+  ]);
+  return { feeRef, feeSnap, commissionRef, commissionSnap };
+}
+
+function writeLedgerEntries(tx, { feeRef, feeSnap, commissionRef, commissionSnap, agentId, transactionId, memberId, groupId, source, txType, feesConfig }) {
+  const feeAmount = txType === TRANSACTION_TYPE.DEPOSIT
+    ? feesConfig.depositFeeFlat
+    : feesConfig.withdrawFeeFlat;
+  const commissionAmount = txType === TRANSACTION_TYPE.DEPOSIT
+    ? feesConfig.agentCommissionDepositFlat
+    : feesConfig.agentCommissionWithdrawFlat;
+
+  if (feeAmount > 0 && !feeSnap.exists) {
+    tx.set(feeRef, {
+      type: LEDGER_TYPE.FEE,
+      agentId,
+      transactionId,
+      memberId,
+      groupId,
+      amount: feeAmount,
+      currency: "BIF",
+      status: LEDGER_STATUS.ACCRUED,
+      source,
+      createdAt: FieldValue.serverTimestamp(),
+      settledAt: null,
+    });
+  }
+
+  if (commissionAmount > 0 && !commissionSnap.exists) {
+    tx.set(commissionRef, {
+      type: LEDGER_TYPE.COMMISSION,
+      agentId,
+      transactionId,
+      memberId,
+      groupId,
+      amount: commissionAmount,
+      currency: "BIF",
+      status: LEDGER_STATUS.ACCRUED,
+      source,
+      createdAt: FieldValue.serverTimestamp(),
+      settledAt: null,
+    });
+  }
+}
+
 exports.recordDeposit = functions.https.onCall(async (data, context) => {
   await requireRole(context, [ROLES.AGENT]);
 
   const agentId = context.auth.uid;
   const userId = String(data?.userId || "").trim();
+  const memberId = String(data?.memberId || "").trim();
+  const clientGroupId = String(data?.groupId || "").trim();
   const notes = String(data?.notes || "").trim();
   const channel = String(data?.channel || "").trim();
+  const source = String(data?.source || "online").trim();
   const amount = parseAmount(data?.amount);
 
   if (!userId) {
     throw httpsError("invalid-argument", "userId is required.");
   }
 
-  if (channel !== "agent" && channel !== "umuco_branch") {
-    throw httpsError("invalid-argument", "channel must be 'agent' or 'umuco_branch'.");
+  const allowedChannels = ["agent", "umuco_branch", "agent_qr"];
+  if (!allowedChannels.includes(channel)) {
+    throw httpsError("invalid-argument", "channel must be 'agent', 'umuco_branch', or 'agent_qr'.");
+  }
+
+  const allowedSources = ["online", "offline"];
+  if (!allowedSources.includes(source)) {
+    throw httpsError("invalid-argument", "source must be 'online' or 'offline'.");
   }
 
   const memberState = await getActiveMemberAndGroup(userId);
+
+  const pendingDepositSnap = await db.collection("transactions")
+    .where("userId", "==", userId)
+    .where("type", "==", TRANSACTION_TYPE.DEPOSIT)
+    .where("status", "==", TRANSACTION_STATUS.PENDING_CONFIRMATION)
+    .limit(1)
+    .get();
+
+  if (!pendingDepositSnap.empty) {
+    throw httpsError(
+      "failed-precondition",
+      "You already have a pending deposit awaiting confirmation."
+    );
+  }
+
   const transactionRef = db.collection("transactions").doc();
   const receiptNo = await generateReceiptNo(db, "TXN");
-  const balanceBefore = Number(memberState.memberData.personalSavings || 0);
+  const walletRef = db.collection("wallets").doc(userId);
 
   await db.runTransaction(async (tx) => {
     // CRITICAL: Verify agent has access to member's group
@@ -128,7 +235,6 @@ exports.recordDeposit = functions.https.onCall(async (data, context) => {
 
     const memberGroupId = memberState.groupId;
 
-    // Verify agent has access to this member's group
     if (!allowedGroups.includes(memberGroupId)) {
       functions.logger.error('Cross-group deposit attempt blocked', {
         agentId: '[REDACTED]',
@@ -139,40 +245,57 @@ exports.recordDeposit = functions.https.onCall(async (data, context) => {
 
       throw httpsError('permission-denied', 'Agent cannot record deposits for this member');
     }
+
+    // Read phase: wallet, fee config, and ledger idempotency docs
+    const [walletSnap, feesConfig, ledgerRefs] = await Promise.all([
+      tx.get(walletRef),
+      getFeesConfig(tx),
+      readLedgerRefs(tx, transactionRef.id),
+    ]);
+
+    if (!walletSnap.exists) {
+      throw httpsError('not-found', 'Wallet not found for this member.');
+    }
+
+    const balanceBeforeDeposit = Number(walletSnap.data().balanceConfirmed || 0);
+
+    // Write phase
     tx.set(transactionRef, {
-      memberId: userId,
-      userId,
-      groupId: memberState.groupId,
       type: TRANSACTION_TYPE.DEPOSIT,
+      status: TRANSACTION_STATUS.PENDING_CONFIRMATION,
+      memberId: memberId || userId,
+      userId,
+      walletId: userId,
+      groupId: memberState.groupId,
+      agentId,
       amount,
-      status: TRANSACTION_STATUS.PENDING_UMUCO,
-      recordedBy: context.auth.uid,
-      channel,
+      source,
       batchId: null,
+      recordedBy: agentId,
+      channel,
       notes,
       receiptNo,
-      balanceBefore,
-      balanceAfter: null,
+      balanceBefore: balanceBeforeDeposit,
+      balanceAfter: balanceBeforeDeposit,
+      ledgerImpact: amount,
       createdAt: FieldValue.serverTimestamp(),
     });
 
-    tx.set(
-      db.collection("groupMembers").doc(userId),
-      {
-        pendingSavings: FieldValue.increment(amount),
-        updatedAt: FieldValue.serverTimestamp(),
-      },
-      { merge: true }
-    );
+    tx.update(walletRef, {
+      balancePending: FieldValue.increment(amount),
+      updatedAt: FieldValue.serverTimestamp(),
+    });
 
-    tx.set(
-      db.collection("groups").doc(memberState.groupId),
-      {
-        pendingSavings: FieldValue.increment(amount),
-        updatedAt: FieldValue.serverTimestamp(),
-      },
-      { merge: true }
-    );
+    writeLedgerEntries(tx, {
+      ...ledgerRefs,
+      agentId,
+      transactionId: transactionRef.id,
+      memberId: memberId || userId,
+      groupId: memberState.groupId,
+      source,
+      txType: TRANSACTION_TYPE.DEPOSIT,
+      feesConfig,
+    });
   });
 
   return {
@@ -181,7 +304,134 @@ exports.recordDeposit = functions.https.onCall(async (data, context) => {
     receiptNo,
     groupId: memberState.groupId,
     amount,
-    status: TRANSACTION_STATUS.PENDING_UMUCO,
+    status: TRANSACTION_STATUS.PENDING_CONFIRMATION,
+  };
+});
+
+exports.adminApproveDeposits = functions.https.onCall(async (data, context) => {
+  if (!context.auth) {
+    throw httpsError("unauthenticated", "Authentication required.");
+  }
+  const adminRole = context.auth.token?.role;
+  if (adminRole !== ROLES.SUPER_ADMIN && adminRole !== ROLES.ADMIN && adminRole !== ROLES.FINANCE) {
+    throw httpsError("permission-denied", "Requires super_admin, admin, or finance role.");
+  }
+
+  const adminId = context.auth.uid;
+  const incomingIds = Array.isArray(data?.transactionIds) ? data.transactionIds : [];
+  const transactionIds = [...new Set(incomingIds.map((id) => String(id || "").trim()).filter(Boolean))];
+
+  if (!transactionIds.length) {
+    throw httpsError("invalid-argument", "transactionIds must contain at least one id.");
+  }
+
+  // Read all transactions outside the batch
+  const txRefs = transactionIds.map((id) => db.collection("transactions").doc(id));
+  const txSnaps = await Promise.all(txRefs.map((ref) => ref.get()));
+
+  // Validate + aggregate per member
+  const memberUpdates = new Map(); // userId → { amount, groupId }
+
+  for (const snap of txSnaps) {
+    if (!snap.exists) {
+      throw httpsError("not-found", `Transaction ${snap.id} not found.`);
+    }
+    const d = snap.data();
+    if (d.type !== TRANSACTION_TYPE.DEPOSIT) {
+      throw httpsError("failed-precondition", `Transaction ${snap.id} is not a deposit.`);
+    }
+    if (d.status !== TRANSACTION_STATUS.PENDING_CONFIRMATION) {
+      throw httpsError("failed-precondition", `Transaction ${snap.id} is not pending confirmation.`);
+    }
+
+    const uid = d.userId;
+    const gid = d.groupId;
+    const amt = Number(d.amount || 0);
+
+    if (!memberUpdates.has(uid)) {
+      memberUpdates.set(uid, { amount: 0, groupId: gid });
+    }
+    memberUpdates.get(uid).amount += amt;
+  }
+
+  // Read wallets for all affected members
+  const memberUserIds = [...memberUpdates.keys()];
+  const walletSnaps = await Promise.all(
+    memberUserIds.map((uid) => db.collection("wallets").doc(uid).get())
+  );
+  const walletsByUser = new Map();
+  walletSnaps.forEach((snap, i) => {
+    if (!snap.exists) {
+      throw httpsError("not-found", `Wallet not found for member ${memberUserIds[i]}.`);
+    }
+    walletsByUser.set(memberUserIds[i], snap.data());
+  });
+
+  // Aggregate group totals
+  const groupTotals = new Map(); // groupId → amount
+  for (const [, update] of memberUpdates) {
+    const { groupId, amount } = update;
+    groupTotals.set(groupId, (groupTotals.get(groupId) || 0) + amount);
+  }
+  const totalApproved = [...memberUpdates.values()].reduce((s, u) => s + u.amount, 0);
+
+  // Atomic batch write
+  const batch = db.batch();
+
+  // 1. Approve each transaction
+  for (const snap of txSnaps) {
+    batch.update(snap.ref, {
+      status: TRANSACTION_STATUS.CONFIRMED,
+      approvedBy: adminId,
+      approvedAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+  }
+
+  // 2. Update wallets (balanceConfirmed, balancePending, availableBalance)
+  for (const [uid, update] of memberUpdates) {
+    const wallet = walletsByUser.get(uid);
+    const newConfirmed = Number(wallet.balanceConfirmed || 0) + update.amount;
+    const newPending = Math.max(0, Number(wallet.balancePending || 0) - update.amount);
+    const locked = Number(wallet.balanceLocked || 0);
+    batch.update(db.collection("wallets").doc(uid), {
+      balanceConfirmed: newConfirmed,
+      balancePending: newPending,
+      availableBalance: newConfirmed - locked,
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+  }
+
+  // 3. Update group savings totals
+  for (const [groupId, amount] of groupTotals) {
+    batch.set(
+      db.collection("groups").doc(groupId),
+      {
+        totalSavings: FieldValue.increment(amount),
+        pendingSavings: FieldValue.increment(-amount),
+        updatedAt: FieldValue.serverTimestamp(),
+      },
+      { merge: true }
+    );
+  }
+
+  // 4. Update kirimbaFund collateral
+  batch.set(
+    db.collection("kirimbaFund").doc("current"),
+    {
+      totalCollateral: FieldValue.increment(totalApproved),
+      lastUpdated: FieldValue.serverTimestamp(),
+      updatedBy: adminId,
+    },
+    { merge: true }
+  );
+
+  await batch.commit();
+
+  return {
+    success: true,
+    approvedCount: txSnaps.length,
+    totalApproved,
   };
 });
 
@@ -245,8 +495,8 @@ exports.submitBatch = functions.https.onCall(async (data, context) => {
         throw httpsError("failed-precondition", `Transaction ${snap.id} is not a deposit.`);
       }
 
-      if (item.status !== TRANSACTION_STATUS.PENDING_UMUCO) {
-        throw httpsError("failed-precondition", `Transaction ${snap.id} is not pending Umuco.`);
+      if (item.status !== TRANSACTION_STATUS.PENDING_CONFIRMATION) {
+        throw httpsError("failed-precondition", `Transaction ${snap.id} is not pending confirmation.`);
       }
 
       if (item.groupId !== groupId) {
@@ -314,8 +564,13 @@ exports.recordWithdrawal = functions.https.onCall(async (data, context) => {
   }
 
   const memberState = await getActiveMemberAndGroup(userId);
-  const availableToWithdraw = Number(memberState.memberData.personalSavings || 0) -
-    Number(memberState.memberData.lockedSavings || 0);
+  const walletSnap = await db.collection("wallets").doc(userId).get();
+  if (!walletSnap.exists) {
+    throw httpsError("not-found", "Wallet not found for this member.");
+  }
+
+  const walletData = walletSnap.data();
+  const availableToWithdraw = Number(walletData.availableBalance || 0);
 
   if ((availableToWithdraw - amount) < MIN_WITHDRAWAL_REMAINING_BALANCE) {
     throw httpsError(
@@ -347,49 +602,45 @@ exports.recordWithdrawal = functions.https.onCall(async (data, context) => {
 
   const receiptNo = await generateReceiptNo(db, "TXN");
   const transactionRef = db.collection("transactions").doc();
+  const walletRef = db.collection("wallets").doc(userId);
 
   await db.runTransaction(async (tx) => {
-    const [gmSnap, groupSnap] = await Promise.all([
-      tx.get(db.collection("groupMembers").doc(userId)),
+    const [freshWalletSnap, groupSnap, feesConfig, ledgerRefs] = await Promise.all([
+      tx.get(walletRef),
       tx.get(db.collection("groups").doc(memberState.groupId)),
+      getFeesConfig(tx),
+      readLedgerRefs(tx, transactionRef.id),
     ]);
 
-    if (!gmSnap.exists || !groupSnap.exists) {
-      throw httpsError("failed-precondition", "Group member or group missing.");
+    if (!freshWalletSnap.exists) {
+      throw httpsError("not-found", "Wallet not found for this member.");
+    }
+    if (!groupSnap.exists) {
+      throw httpsError("failed-precondition", "Group record missing.");
     }
 
-    const gmData = gmSnap.data();
-    const groupData = groupSnap.data();
-    const personalSavings = Number(gmData.personalSavings || 0);
-    const lockedSavings = Number(gmData.lockedSavings || 0);
-    const newPersonalSavings = personalSavings - amount;
+    const wallet = freshWalletSnap.data();
+    const balanceConfirmed = Number(wallet.balanceConfirmed || 0);
+    const balanceLocked = Number(wallet.balanceLocked || 0);
+    const newBalanceConfirmed = balanceConfirmed - amount;
 
-    if ((newPersonalSavings - lockedSavings) < MIN_WITHDRAWAL_REMAINING_BALANCE) {
+    if ((newBalanceConfirmed - balanceLocked) < MIN_WITHDRAWAL_REMAINING_BALANCE) {
       throw httpsError(
         "failed-precondition",
         `Withdrawal would violate minimum balance of ${MIN_WITHDRAWAL_REMAINING_BALANCE} BIF.`
       );
     }
 
-    const creditLimit = calculateCreditLimit(newPersonalSavings);
-    const availableCredit = Math.max(0, creditLimit - lockedSavings);
-    const groupTotalSavings = Number(groupData.totalSavings || 0);
-
-    tx.set(
-      db.collection("groupMembers").doc(userId),
-      {
-        personalSavings: newPersonalSavings,
-        creditLimit,
-        availableCredit,
-        updatedAt: FieldValue.serverTimestamp(),
-      },
-      { merge: true }
-    );
+    tx.update(walletRef, {
+      balanceConfirmed: newBalanceConfirmed,
+      availableBalance: newBalanceConfirmed - balanceLocked,
+      updatedAt: FieldValue.serverTimestamp(),
+    });
 
     tx.set(
       db.collection("groups").doc(memberState.groupId),
       {
-        totalSavings: Math.max(0, groupTotalSavings - amount),
+        totalSavings: Math.max(0, Number(groupSnap.data().totalSavings || 0) - amount),
         updatedAt: FieldValue.serverTimestamp(),
       },
       { merge: true }
@@ -398,6 +649,7 @@ exports.recordWithdrawal = functions.https.onCall(async (data, context) => {
     tx.set(transactionRef, {
       memberId: userId,
       userId,
+      walletId: userId,
       groupId: memberState.groupId,
       type: TRANSACTION_TYPE.WITHDRAWAL,
       amount,
@@ -407,9 +659,21 @@ exports.recordWithdrawal = functions.https.onCall(async (data, context) => {
       batchId: null,
       notes,
       receiptNo,
-      balanceBefore: personalSavings,
-      balanceAfter: newPersonalSavings,
+      balanceBefore: balanceConfirmed,
+      balanceAfter: newBalanceConfirmed,
+      ledgerImpact: -amount,
       createdAt: FieldValue.serverTimestamp(),
+    });
+
+    writeLedgerEntries(tx, {
+      ...ledgerRefs,
+      agentId: context.auth.uid,
+      transactionId: transactionRef.id,
+      memberId: userId,
+      groupId: memberState.groupId,
+      source: "online",
+      txType: TRANSACTION_TYPE.WITHDRAWAL,
+      feesConfig,
     });
   });
 
@@ -466,7 +730,7 @@ exports.confirmBatch = functions.https.onCall(async (data, context) => {
 
     const txn = txnSnap.data();
 
-    if (txn.type !== TRANSACTION_TYPE.DEPOSIT || txn.status !== TRANSACTION_STATUS.PENDING_UMUCO) {
+    if (txn.type !== TRANSACTION_TYPE.DEPOSIT || txn.status !== TRANSACTION_STATUS.PENDING_CONFIRMATION) {
       throw httpsError("failed-precondition", `Transaction ${txnSnap.id} is not confirmable.`);
     }
 
@@ -486,6 +750,20 @@ exports.confirmBatch = functions.https.onCall(async (data, context) => {
     memberUpdate.amount += amount;
     memberUpdate.txnIds.push(txnSnap.id);
   }
+
+  // Fetch wallets for all members being updated
+  const memberUserIds = [...memberUpdates.keys()];
+  const walletSnaps = await Promise.all(
+    memberUserIds.map((uid) => db.collection("wallets").doc(uid).get())
+  );
+
+  const walletsByUserId = new Map();
+  walletSnaps.forEach((snap, i) => {
+    if (!snap.exists) {
+      throw httpsError("not-found", `Wallet not found for member ${memberUserIds[i]}.`);
+    }
+    walletsByUserId.set(memberUserIds[i], snap.data());
+  });
 
   // Use Batch API (500-op limit instead of 25)
   const batch = db.batch();
@@ -508,28 +786,30 @@ exports.confirmBatch = functions.https.onCall(async (data, context) => {
     });
   });
 
-  // Update members using increments (no need to read first)
+  // Update wallets
   memberUpdates.forEach((update, userId) => {
-    const memberRef = db.collection("groupMembers").doc(userId);
+    const wallet = walletsByUserId.get(userId);
+    const newBalanceConfirmed = Number(wallet.balanceConfirmed || 0) + update.amount;
+    const newBalancePending = Math.max(0, Number(wallet.balancePending || 0) - update.amount);
+    const balanceLocked = Number(wallet.balanceLocked || 0);
+    const newAvailableBalance = newBalanceConfirmed - balanceLocked;
 
-    batch.update(memberRef, {
-      personalSavings: FieldValue.increment(update.amount),
-      pendingSavings: FieldValue.increment(-update.amount),
+    batch.update(db.collection("wallets").doc(userId), {
+      balanceConfirmed: newBalanceConfirmed,
+      balancePending: newBalancePending,
+      availableBalance: newAvailableBalance,
       updatedAt: FieldValue.serverTimestamp(),
     });
-
-    // Note: creditLimit and availableCredit will be recalculated on next read
-    // This is acceptable trade-off to avoid reading members in transaction
   });
 
-  // Update group totals using increments
+  // Update group totals
   batch.update(db.collection("groups").doc(batchData.groupId), {
     totalSavings: FieldValue.increment(totalConfirmed),
     pendingSavings: FieldValue.increment(-totalConfirmed),
     updatedAt: FieldValue.serverTimestamp(),
   });
 
-  // Update fund using increment (NO need to read all groups!)
+  // Update fund
   batch.set(
     db.collection("kirimbaFund").doc("current"),
     {
@@ -591,8 +871,55 @@ exports.flagBatch = functions.https.onCall(async (data, context) => {
   return { success: true };
 });
 
+exports.getAgentLedger = functions.https.onCall(async (data, context) => {
+  if (!context.auth) {
+    throw httpsError("unauthenticated", "Authentication required.");
+  }
+
+  const callerRole = context.auth.token?.role;
+  const isAdmin = callerRole === ROLES.SUPER_ADMIN || callerRole === ROLES.ADMIN || callerRole === ROLES.FINANCE;
+  const isAgent = callerRole === ROLES.AGENT;
+
+  if (!isAdmin && !isAgent) {
+    throw httpsError("permission-denied", "Requires agent or admin role.");
+  }
+
+  // Agents can only read their own ledger; admins can query any agent
+  let targetAgentId;
+  if (isAdmin && data?.agentId) {
+    targetAgentId = String(data.agentId).trim();
+  } else {
+    targetAgentId = context.auth.uid;
+  }
+
+  if (!targetAgentId) {
+    throw httpsError("invalid-argument", "agentId is required.");
+  }
+
+  const status = String(data?.status || "").trim();
+  const txType = String(data?.type || "").trim();
+
+  let query = db.collection("agentLedgers").where("agentId", "==", targetAgentId);
+
+  if (status) {
+    query = query.where("status", "==", status);
+  }
+  if (txType) {
+    query = query.where("type", "==", txType);
+  }
+
+  query = query.orderBy("createdAt", "desc").limit(100);
+
+  const snap = await query.get();
+  return {
+    success: true,
+    agentId: targetAgentId,
+    entries: snap.docs.map((doc) => ({ id: doc.id, ...doc.data() })),
+  };
+});
+
 exports.getBatchesForGroup = functions.https.onCall(async (data, context) => {
-  await requireRole(context, [ROLES.AGENT, ROLES.SUPER_ADMIN, ROLES.FINANCE, ROLES.UMUCO]);
+  await requireRole(context, [ROLES.AGENT, ROLES.SUPER_ADMIN, ROLES.ADMIN, ROLES.FINANCE, ROLES.UMUCO]);
 
   const groupId = String(data?.groupId || "").trim();
   const status = String(data?.status || "").trim();

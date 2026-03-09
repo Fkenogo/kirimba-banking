@@ -5,7 +5,7 @@ const admin = require("firebase-admin");
 const { FieldValue } = require("firebase-admin/firestore");
 const { ROLES } = require("./constants");
 const { hashPIN } = require("./utils");
-const { isNonEmptyString, isValidBurundiPhone, isValidPin, normalizePhone } = require("./validators");
+const { isNonEmptyString, isValidProvisioningPhone, isValidPin, normalizePhone, phoneToAuthEmail } = require("./validators");
 
 if (!admin.apps.length) {
   admin.initializeApp();
@@ -18,70 +18,162 @@ function httpsError(code, message) {
   return new functions.https.HttpsError(code, message);
 }
 
-// Local to agents.js — custom claim required strictly; no Firestore fallback.
-function requireSuperAdmin(context) {
+function toProvisioningError(error, fallbackMessage = "User provisioning failed.") {
+  if (error instanceof functions.https.HttpsError) {
+    return error;
+  }
+
+  const authCode = error?.errorInfo?.code || error?.code || "";
+  switch (authCode) {
+    case "auth/email-already-exists":
+      return httpsError("already-exists", "Phone number is already registered.");
+    case "auth/invalid-email":
+      return httpsError("invalid-argument", "Enter a valid phone number in international format, e.g. +25766123456");
+    case "auth/invalid-password":
+      return httpsError("invalid-argument", "PIN is not accepted by Firebase Auth. Contact support to verify password policy.");
+    case "auth/insufficient-permission":
+    case "auth/unauthorized-continue-uri":
+      return httpsError("permission-denied", "Insufficient permissions.");
+    default:
+      return httpsError("internal", fallbackMessage);
+  }
+}
+
+function requireRoles(context, allowedRoles) {
   if (!context.auth || !context.auth.uid) {
     throw httpsError("unauthenticated", "Authentication required.");
   }
-  if (context.auth.token?.role !== ROLES.SUPER_ADMIN) {
+  const role = context.auth.token?.role;
+  if (!role || !allowedRoles.includes(role)) {
     throw httpsError("permission-denied", "Insufficient permissions.");
+  }
+  return context.auth.uid;
+}
+
+async function assertEmailNotTaken(email) {
+  try {
+    await auth.getUserByEmail(email);
+    throw httpsError("already-exists", "Phone number is already registered.");
+  } catch (err) {
+    if (err instanceof functions.https.HttpsError) throw err;
+    if (err.errorInfo?.code !== "auth/user-not-found") {
+      functions.logger.error("assertEmailNotTaken failed", {
+        code: err?.errorInfo?.code || err?.code || "unknown",
+        message: err?.message || "Unknown error",
+        email,
+      });
+      throw toProvisioningError(err, "Failed to verify existing account.");
+    }
+  }
+}
+
+async function provisionUserWithRole({
+  fullName,
+  phone,
+  pin,
+  role,
+  callerUid,
+  userExtra = {},
+}) {
+  try {
+    if (!isNonEmptyString(fullName) || fullName.trim().length < 3 || fullName.trim().length > 100) {
+      throw httpsError("invalid-argument", "fullName must be between 3 and 100 characters.");
+    }
+    if (!isValidProvisioningPhone(phone)) {
+      throw httpsError(
+        "invalid-argument",
+        "Enter a valid phone number in international format, e.g. +25766123456"
+      );
+    }
+    if (!isValidPin(pin)) {
+      throw httpsError("invalid-argument", "PIN must be exactly 6 digits.");
+    }
+
+    const normalizedPhone = normalizePhone(phone);
+    const email = phoneToAuthEmail(normalizedPhone);
+    await assertEmailNotTaken(email);
+
+    const pinHash = await hashPIN(pin);
+
+    let uid;
+    try {
+      const userRecord = await auth.createUser({
+        email,
+        password: pin,
+        displayName: fullName.trim(),
+      });
+      uid = userRecord.uid;
+    } catch (err) {
+      functions.logger.error("auth.createUser failed", {
+        code: err?.errorInfo?.code || err?.code || "unknown",
+        message: err?.message || "Unknown error",
+        email,
+      });
+      throw toProvisioningError(err);
+    }
+
+    try {
+      await auth.setCustomUserClaims(uid, { role });
+    } catch (err) {
+      functions.logger.error("auth.setCustomUserClaims failed", {
+        code: err?.errorInfo?.code || err?.code || "unknown",
+        message: err?.message || "Unknown error",
+        uid,
+        role,
+      });
+      throw toProvisioningError(err, "Failed to assign account role.");
+    }
+
+    try {
+      await db.collection("users").doc(uid).set(
+        {
+          uid,
+          fullName: fullName.trim(),
+          phone: normalizedPhone,
+          role,
+          status: "active",
+          groupId: null,
+          isLeader: false,
+          ledGroupId: null,
+          nationalId: null,
+          pinHash,
+          createdAt: FieldValue.serverTimestamp(),
+          approvedAt: FieldValue.serverTimestamp(),
+          updatedAt: null,
+          createdBy: callerUid,
+          ...userExtra,
+        },
+        { merge: true }
+      );
+    } catch (err) {
+      functions.logger.error("users write failed", {
+        code: err?.code || "unknown",
+        message: err?.message || "Unknown error",
+        uid,
+      });
+      throw httpsError("internal", "Failed to save user profile.");
+    }
+
+    return { uid, normalizedPhone };
+  } catch (err) {
+    throw toProvisioningError(err);
   }
 }
 
 /**
  * Provision a new agent account (Firebase Auth + users/{uid} + agents/{uid}).
- * Callable by super_admin only.
+ * Callable by admin or super_admin.
  */
 const provisionAgent = functions.https.onCall(async (data, context) => {
-  await requireSuperAdmin(context);
-
+  const callerUid = requireRoles(context, [ROLES.SUPER_ADMIN, ROLES.ADMIN]);
   const { fullName, phone, pin } = data;
-
-  // Validate inputs
-  if (!isNonEmptyString(fullName) || fullName.trim().length < 3 || fullName.trim().length > 100) {
-    throw httpsError("invalid-argument", "fullName must be between 3 and 100 characters.");
-  }
-  if (!isValidBurundiPhone(phone)) {
-    throw httpsError("invalid-argument", "phone must be in +257XXXXXXXX format.");
-  }
-  if (!isValidPin(pin)) {
-    throw httpsError("invalid-argument", "pin must be exactly 4 digits.");
-  }
-
-  const normalizedPhone = normalizePhone(phone);
-  const email = `${normalizedPhone}@kirimba.app`;
-  const callerUid = context.auth.uid;
-
-  // Duplicate check
-  try {
-    await auth.getUserByEmail(email);
-    throw httpsError("already-exists", "Phone number is already registered.");
-  } catch (err) {
-    if (err.code === "already-exists") throw err;
-    if (err.errorInfo?.code !== "auth/user-not-found") {
-      throw httpsError("internal", "Agent provisioning failed.");
-    }
-    // auth/user-not-found is expected — proceed
-  }
-
-  // Hash PIN
-  const pinHash = await hashPIN(pin);
-
-  // Create Firebase Auth user
-  let uid;
-  try {
-    const userRecord = await auth.createUser({
-      email,
-      password: pinHash,
-      displayName: fullName.trim(),
-    });
-    uid = userRecord.uid;
-  } catch (err) {
-    throw httpsError("internal", "Agent provisioning failed.");
-  }
-
-  // Set custom claim before Firestore writes
-  await auth.setCustomUserClaims(uid, { role: ROLES.AGENT });
+  const { uid, normalizedPhone } = await provisionUserWithRole({
+    fullName,
+    phone,
+    pin,
+    role: ROLES.AGENT,
+    callerUid,
+  });
 
   // Atomic batch write
   const batch = db.batch();
@@ -99,13 +191,10 @@ const provisionAgent = functions.https.onCall(async (data, context) => {
       isLeader: false,
       ledGroupId: null,
       nationalId: null,
-      pinHash,
       createdAt: FieldValue.serverTimestamp(),
-      approvedAt: FieldValue.serverTimestamp(),
-      updatedAt: null,
       createdBy: callerUid,
-    },
-    { merge: true }
+      },
+      { merge: true }
   );
 
   const agentRef = db.collection("agents").doc(uid);
@@ -128,10 +217,10 @@ const provisionAgent = functions.https.onCall(async (data, context) => {
 
 /**
  * Assign a provisioned agent to an active group.
- * Callable by super_admin only.
+ * Callable by admin or super_admin.
  */
 const assignAgentToGroup = functions.https.onCall(async (data, context) => {
-  await requireSuperAdmin(context);
+  requireRoles(context, [ROLES.SUPER_ADMIN, ROLES.ADMIN]);
 
   const { agentId, groupId } = data;
 
@@ -182,4 +271,50 @@ const assignAgentToGroup = functions.https.onCall(async (data, context) => {
   return { success: true };
 });
 
-module.exports = { provisionAgent, assignAgentToGroup };
+/**
+ * Provision a new admin account.
+ * Callable by super_admin only.
+ */
+const provisionAdmin = functions.https.onCall(async (data, context) => {
+  const callerUid = requireRoles(context, [ROLES.SUPER_ADMIN]);
+  const { fullName, phone, pin } = data;
+  const { uid } = await provisionUserWithRole({
+    fullName,
+    phone,
+    pin,
+    role: ROLES.ADMIN,
+    callerUid,
+  });
+  return { success: true, adminId: uid };
+});
+
+/**
+ * Provision a new institution staff account.
+ * Callable by admin or super_admin.
+ */
+const provisionInstitutionUser = functions.https.onCall(async (data, context) => {
+  const callerUid = requireRoles(context, [ROLES.SUPER_ADMIN, ROLES.ADMIN]);
+  const { fullName, phone, pin, institutionId } = data;
+  const extra = {};
+  if (isNonEmptyString(institutionId)) {
+    extra.institutionId = institutionId.trim();
+  }
+
+  const { uid } = await provisionUserWithRole({
+    fullName,
+    phone,
+    pin,
+    role: ROLES.UMUCO,
+    callerUid,
+    userExtra: extra,
+  });
+
+  return { success: true, institutionUserId: uid };
+});
+
+module.exports = {
+  provisionAgent,
+  assignAgentToGroup,
+  provisionAdmin,
+  provisionInstitutionUser,
+};

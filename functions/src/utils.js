@@ -8,11 +8,11 @@ const LOCKOUT_DURATION_MS = 15 * 60 * 1000; // 15 minutes
 
 /**
  * Hash a PIN using bcrypt with salt
- * @param {string|number} pin - 4-digit PIN
+ * @param {string|number} pin - 6-digit PIN
  * @returns {Promise<string>} Hashed PIN
  */
 async function hashPIN(pin) {
-  const normalizedPIN = String(pin).padStart(4, "0");
+  const normalizedPIN = String(pin).padStart(6, "0");
   return await bcrypt.hash(normalizedPIN, SALT_ROUNDS);
 }
 
@@ -23,7 +23,7 @@ async function hashPIN(pin) {
  * @returns {Promise<boolean>} True if PIN matches
  */
 async function verifyPIN(inputPIN, storedHash) {
-  const normalizedPIN = String(inputPIN).padStart(4, "0");
+  const normalizedPIN = String(inputPIN).padStart(6, "0");
   return await bcrypt.compare(normalizedPIN, storedHash);
 }
 
@@ -96,6 +96,11 @@ function generateGroupCode() {
   return `KRM-${suffix}`;
 }
 
+function generateInviteCode() {
+  const suffix = Math.floor(1000 + Math.random() * 9000);
+  return `KIR-${suffix}`;
+}
+
 async function generateReceiptNo(db, type = "TXN") {
   const year = new Date().getFullYear();
   const counterRef = db.collection("counters").doc(`${type.toUpperCase()}_${year}`);
@@ -117,6 +122,7 @@ module.exports = {
   calculateCreditLimit,
   calculateInterest,
   generateGroupCode,
+  generateInviteCode,
   generateReceiptNo,
   MAX_PIN_ATTEMPTS,
   LOCKOUT_DURATION_MS,
