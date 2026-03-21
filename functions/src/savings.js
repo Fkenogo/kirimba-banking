@@ -59,20 +59,16 @@ async function getActiveMemberAndGroup(userId) {
     throw httpsError("not-found", "Member user profile was not found.");
   }
 
-  if (!memberSnap.exists) {
-    throw httpsError("failed-precondition", "User is not linked to a group.");
-  }
-
   const userData = userSnap.data();
-  const memberData = memberSnap.data();
+  const memberData = memberSnap.exists ? memberSnap.data() : null;
 
   if (userData.status !== USER_STATUS.ACTIVE) {
     throw httpsError("failed-precondition", "Member account must be active.");
   }
 
-  const groupId = memberData.groupId || userData.groupId;
+  const groupId = memberData?.groupId || userData.groupId || userData.ledGroupId;
   if (!groupId) {
-    throw httpsError("failed-precondition", "Member has no group.");
+    throw httpsError("failed-precondition", "User is not linked to a group.");
   }
 
   const groupSnap = await db.collection("groups").doc(groupId).get();
@@ -93,11 +89,11 @@ async function getActiveMemberAndGroup(userId) {
 }
 
 /**
- * Reads the fee/commission config from config/fees within a transaction.
- * Returns zero values if the doc doesn't exist (fees are optional).
+ * Reads fee/commission config from systemConfig/fees (canonical source).
+ * Falls back to zero values if the document has not been seeded yet.
  */
 async function getFeesConfig(tx) {
-  const snap = await tx.get(db.collection("config").doc("fees"));
+  const snap = await tx.get(db.collection("systemConfig").doc("fees"));
   if (!snap.exists) {
     return {
       depositFeeFlat: 0,
@@ -110,7 +106,7 @@ async function getFeesConfig(tx) {
   return {
     depositFeeFlat: Math.round(Number(d.depositFeeFlat || 0)),
     withdrawFeeFlat: Math.round(Number(d.withdrawFeeFlat || 0)),
-    agentCommissionDepositFlat: Math.round(Number(d.agentCommissionDepositFlat || 0)),
+    agentCommissionDepositFlat: Math.round(Number(d.agentCommissionDepositFlat || d.agentCommissionRate || 0)),
     agentCommissionWithdrawFlat: Math.round(Number(d.agentCommissionWithdrawFlat || 0)),
   };
 }
@@ -174,6 +170,7 @@ function writeLedgerEntries(tx, { feeRef, feeSnap, commissionRef, commissionSnap
 }
 
 exports.recordDeposit = functions.https.onCall(async (data, context) => {
+  console.log("RECORD_DEPOSIT_VERSION=flex-agent-v2");
   await requireRole(context, [ROLES.AGENT]);
 
   const agentId = context.auth.uid;
@@ -189,9 +186,9 @@ exports.recordDeposit = functions.https.onCall(async (data, context) => {
     throw httpsError("invalid-argument", "userId is required.");
   }
 
-  const allowedChannels = ["agent", "umuco_branch", "agent_qr"];
+  const allowedChannels = ["agent", "institution_branch", "agent_qr"];
   if (!allowedChannels.includes(channel)) {
-    throw httpsError("invalid-argument", "channel must be 'agent', 'umuco_branch', or 'agent_qr'.");
+    throw httpsError("invalid-argument", "channel must be 'agent', 'institution_branch', or 'agent_qr'.");
   }
 
   const allowedSources = ["online", "offline"];
@@ -200,6 +197,15 @@ exports.recordDeposit = functions.https.onCall(async (data, context) => {
   }
 
   const memberState = await getActiveMemberAndGroup(userId);
+
+  // Derive institutionId from the member's group (canonical FK source)
+  let groupInstitutionId = null;
+  if (memberState.groupId) {
+    const groupSnap = await db.collection("groups").doc(memberState.groupId).get();
+    if (groupSnap.exists) {
+      groupInstitutionId = groupSnap.data().institutionId || null;
+    }
+  }
 
   const pendingDepositSnap = await db.collection("transactions")
     .where("userId", "==", userId)
@@ -220,30 +226,17 @@ exports.recordDeposit = functions.https.onCall(async (data, context) => {
   const walletRef = db.collection("wallets").doc(userId);
 
   await db.runTransaction(async (tx) => {
-    // CRITICAL: Verify agent has access to member's group
-    const agentDoc = await tx.get(db.collection('agents').doc(agentId));
+    const agentDoc = await tx.get(db.collection("agents").doc(agentId));
     if (!agentDoc.exists) {
-      throw httpsError('not-found', 'Agent profile not found');
+      throw httpsError("not-found", "Agent profile not found.");
     }
 
     const agentData = agentDoc.data();
-    const allowedGroups = agentData.assignedGroups || [];
-
-    if (allowedGroups.length === 0) {
-      throw httpsError('permission-denied', 'Agent not assigned to any groups');
+    if (agentData.role !== ROLES.AGENT) {
+      throw httpsError("failed-precondition", "User is not an agent.");
     }
-
-    const memberGroupId = memberState.groupId;
-
-    if (!allowedGroups.includes(memberGroupId)) {
-      functions.logger.error('Cross-group deposit attempt blocked', {
-        agentId: '[REDACTED]',
-        userId: '[REDACTED]',
-        memberGroupId,
-        allowedGroups,
-      });
-
-      throw httpsError('permission-denied', 'Agent cannot record deposits for this member');
+    if (agentData.status !== USER_STATUS.ACTIVE) {
+      throw httpsError("failed-precondition", "Agent account must be active.");
     }
 
     // Read phase: wallet, fee config, and ledger idempotency docs
@@ -254,7 +247,11 @@ exports.recordDeposit = functions.https.onCall(async (data, context) => {
     ]);
 
     if (!walletSnap.exists) {
-      throw httpsError('not-found', 'Wallet not found for this member.');
+      throw httpsError("not-found", "Wallet not found for this member.");
+    }
+
+    if (clientGroupId && clientGroupId !== memberState.groupId) {
+      throw httpsError("failed-precondition", "Provided groupId does not match the member's group.");
     }
 
     const balanceBeforeDeposit = Number(walletSnap.data().balanceConfirmed || 0);
@@ -267,6 +264,7 @@ exports.recordDeposit = functions.https.onCall(async (data, context) => {
       userId,
       walletId: userId,
       groupId: memberState.groupId,
+      institutionId: groupInstitutionId,
       agentId,
       amount,
       source,
@@ -309,13 +307,12 @@ exports.recordDeposit = functions.https.onCall(async (data, context) => {
 });
 
 exports.adminApproveDeposits = functions.https.onCall(async (data, context) => {
-  if (!context.auth) {
-    throw httpsError("unauthenticated", "Authentication required.");
-  }
-  const adminRole = context.auth.token?.role;
-  if (adminRole !== ROLES.SUPER_ADMIN && adminRole !== ROLES.ADMIN && adminRole !== ROLES.FINANCE) {
-    throw httpsError("permission-denied", "Requires super_admin, admin, or finance role.");
-  }
+  // Deposit confirmation is exclusively handled by institution (Umuco) staff via confirmBatch.
+  // Admin approval of deposits is not permitted.
+  throw httpsError(
+    "permission-denied",
+    "Deposit confirmation is not permitted for admin. Only institution staff can confirm deposits via batch confirmation."
+  );
 
   const adminId = context.auth.uid;
   const incomingIds = Array.isArray(data?.transactionIds) ? data.transactionIds : [];
@@ -483,7 +480,13 @@ exports.submitBatch = functions.https.onCall(async (data, context) => {
 
   await db.runTransaction(async (tx) => {
     const txRefs = transactionIds.map((id) => db.collection("transactions").doc(id));
-    const txSnaps = await Promise.all(txRefs.map((ref) => tx.get(ref)));
+    const groupRef = db.collection("groups").doc(groupId);
+    const [txSnaps, groupSnap] = await Promise.all([
+      Promise.all(txRefs.map((ref) => tx.get(ref))),
+      tx.get(groupRef),
+    ]);
+
+    const batchInstitutionId = groupSnap.exists ? (groupSnap.data().institutionId || null) : null;
 
     txSnaps.forEach((snap, index) => {
       if (!snap.exists) {
@@ -517,17 +520,18 @@ exports.submitBatch = functions.https.onCall(async (data, context) => {
 
     tx.set(batchRef, {
       groupId,
+      institutionId: batchInstitutionId,
       agentId: context.auth.uid,
       transactionIds,
       totalAmount,
       memberCount: memberIds.size,
       status: DEPOSIT_BATCH_STATUS.SUBMITTED,
-      idempotencyToken, // Store for idempotency
+      idempotencyToken,
       submittedAt: FieldValue.serverTimestamp(),
       confirmedBy: null,
       confirmedAt: null,
-      umucoNotes: null,
-      umucoAccountRef: null,
+      institutionNotes: null,
+      institutionRef: null,
       createdAt: FieldValue.serverTimestamp(),
       updatedAt: FieldValue.serverTimestamp(),
     });
@@ -686,15 +690,70 @@ exports.recordWithdrawal = functions.https.onCall(async (data, context) => {
   };
 });
 
-exports.confirmBatch = functions.https.onCall(async (data, context) => {
-  await requireRole(context, [ROLES.UMUCO]);
+/**
+ * Member-initiated withdrawal request.
+ * Creates a pending request that an agent must process via recordWithdrawal.
+ * Does NOT move money — this is a pre-declaration only.
+ */
+exports.memberRequestWithdrawal = functions.https.onCall(async (data, context) => {
+  if (!context.auth?.uid) {
+    throw httpsError("unauthenticated", "Authentication required.");
+  }
 
-  const batchId = String(data?.batchId || "").trim();
-  const umucoAccountRef = String(data?.umucoAccountRef || "").trim();
+  const role = context.auth.token?.role;
+  if (role !== ROLES.MEMBER && role !== ROLES.LEADER) {
+    throw httpsError("permission-denied", "Member account required.");
+  }
+
+  const uid = context.auth.uid;
+  const amount = parseAmount(data?.amount);
   const notes = String(data?.notes || "").trim();
 
-  if (!batchId || !umucoAccountRef) {
-    throw httpsError("invalid-argument", "batchId and umucoAccountRef are required.");
+  const walletSnap = await db.collection("wallets").doc(uid).get();
+  if (!walletSnap.exists) {
+    throw httpsError("not-found", "Wallet not found.");
+  }
+
+  const wallet = walletSnap.data();
+  const availableBalance = Number(wallet.availableBalance || 0);
+  const maxWithdrawal = availableBalance - MIN_WITHDRAWAL_REMAINING_BALANCE;
+
+  if (maxWithdrawal <= 0) {
+    throw httpsError(
+      "failed-precondition",
+      `Insufficient balance. Minimum balance of ${MIN_WITHDRAWAL_REMAINING_BALANCE} BIF must remain.`
+    );
+  }
+
+  if (amount > maxWithdrawal) {
+    throw httpsError(
+      "failed-precondition",
+      `Maximum withdrawal is ${maxWithdrawal} BIF (minimum balance of ${MIN_WITHDRAWAL_REMAINING_BALANCE} BIF must remain).`
+    );
+  }
+
+  const requestRef = db.collection("withdrawalRequests").doc();
+  await requestRef.set({
+    userId: uid,
+    amount,
+    notes: notes || null,
+    status: "pending_agent",
+    createdAt: FieldValue.serverTimestamp(),
+  });
+
+  return { success: true, requestId: requestRef.id, amount, status: "pending_agent" };
+});
+
+exports.confirmBatch = functions.https.onCall(async (data, context) => {
+  await requireRole(context, [ROLES.INSTITUTION_USER]);
+
+  const batchId = String(data?.batchId || "").trim();
+  // Accept both new name (institutionRef) and old name (umucoAccountRef) for backward compatibility
+  const institutionRef = String(data?.institutionRef || data?.umucoAccountRef || "").trim();
+  const notes = String(data?.notes || "").trim();
+
+  if (!batchId || !institutionRef) {
+    throw httpsError("invalid-argument", "batchId and institutionRef are required.");
   }
 
   const batchRef = db.collection("depositBatches").doc(batchId);
@@ -708,6 +767,15 @@ exports.confirmBatch = functions.https.onCall(async (data, context) => {
   const batchData = batchDoc.data();
   if (batchData.status !== DEPOSIT_BATCH_STATUS.SUBMITTED) {
     throw httpsError("failed-precondition", `Batch already ${batchData.status}.`);
+  }
+
+  // Institution scope check: migrated institution_user can only confirm their own institution's batches
+  const callerRole = context.auth.token?.role;
+  const callerInstitutionId = context.auth.token?.institutionId || null;
+  if (callerRole === ROLES.INSTITUTION_USER && callerInstitutionId) {
+    if (batchData.institutionId && batchData.institutionId !== callerInstitutionId) {
+      throw httpsError("permission-denied", "You can only confirm batches for your own institution.");
+    }
   }
 
   const txIds = Array.isArray(batchData.transactionIds) ? batchData.transactionIds : [];
@@ -773,8 +841,8 @@ exports.confirmBatch = functions.https.onCall(async (data, context) => {
     status: DEPOSIT_BATCH_STATUS.CONFIRMED,
     confirmedBy: context.auth.uid,
     confirmedAt: FieldValue.serverTimestamp(),
-    umucoNotes: notes || null,
-    umucoAccountRef,
+    institutionNotes: notes || null,
+    institutionRef,
     updatedAt: FieldValue.serverTimestamp(),
   });
 
@@ -831,7 +899,7 @@ exports.confirmBatch = functions.https.onCall(async (data, context) => {
 });
 
 exports.flagBatch = functions.https.onCall(async (data, context) => {
-  await requireRole(context, [ROLES.UMUCO]);
+  await requireRole(context, [ROLES.INSTITUTION_USER]);
 
   const batchId = String(data?.batchId || "").trim();
   const notes = String(data?.notes || "").trim();
@@ -845,10 +913,20 @@ exports.flagBatch = functions.https.onCall(async (data, context) => {
     throw httpsError("not-found", "Batch not found.");
   }
 
+  // Institution scope check: migrated institution_user can only flag their own institution's batches
+  const callerRoleFlag = context.auth.token?.role;
+  const callerInstitutionIdFlag = context.auth.token?.institutionId || null;
+  if (callerRoleFlag === ROLES.INSTITUTION_USER && callerInstitutionIdFlag) {
+    const batchDataFlag = batchSnap.data();
+    if (batchDataFlag.institutionId && batchDataFlag.institutionId !== callerInstitutionIdFlag) {
+      throw httpsError("permission-denied", "You can only flag batches for your own institution.");
+    }
+  }
+
   await batchRef.set(
     {
       status: DEPOSIT_BATCH_STATUS.FLAGGED,
-      umucoNotes: notes,
+      institutionNotes: notes,
       flaggedBy: context.auth.uid,
       flaggedAt: FieldValue.serverTimestamp(),
       updatedAt: FieldValue.serverTimestamp(),
@@ -856,10 +934,12 @@ exports.flagBatch = functions.https.onCall(async (data, context) => {
     { merge: true }
   );
 
+  const batchData = batchSnap.data();
   await db.collection("notifications").add({
     type: "batch_flagged",
     batchId,
-    groupId: batchSnap.data().groupId || null,
+    groupId: batchData.groupId || null,
+    recipientId: batchData.agentId || null,
     status: "unread",
     severity: "high",
     message: notes,
@@ -918,8 +998,49 @@ exports.getAgentLedger = functions.https.onCall(async (data, context) => {
   };
 });
 
+exports.getPendingWithdrawalRequests = functions.https.onCall(async (data, context) => {
+  requireRole(context, [ROLES.SUPER_ADMIN, ROLES.ADMIN]);
+
+  const snap = await db
+    .collection("withdrawalRequests")
+    .where("status", "==", "pending_approval")
+    .orderBy("createdAt", "desc")
+    .limit(200)
+    .get();
+
+  const rows = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+
+  const userIds = [...new Set(rows.map((r) => r.userId).filter(Boolean))];
+  const groupIds = [...new Set(rows.map((r) => r.groupId).filter(Boolean))];
+
+  const [userDocs, groupDocs] = await Promise.all([
+    userIds.length > 0
+      ? Promise.all(userIds.map((uid) => db.collection("users").doc(uid).get()))
+      : Promise.resolve([]),
+    groupIds.length > 0
+      ? Promise.all(groupIds.map((gid) => db.collection("groups").doc(gid).get()))
+      : Promise.resolve([]),
+  ]);
+
+  const userNames = Object.fromEntries(
+    userDocs.map((snap) => [snap.id, snap.exists ? (snap.data().fullName || snap.data().name || snap.id) : snap.id])
+  );
+  const groupNames = Object.fromEntries(
+    groupDocs.map((snap) => [snap.id, snap.exists ? (snap.data().name || snap.id) : snap.id])
+  );
+
+  return {
+    success: true,
+    requests: rows.map((r) => ({
+      ...r,
+      memberName: r.userId ? (userNames[r.userId] || r.userId) : null,
+      groupName: r.groupId ? (groupNames[r.groupId] || r.groupId) : null,
+    })),
+  };
+});
+
 exports.getBatchesForGroup = functions.https.onCall(async (data, context) => {
-  await requireRole(context, [ROLES.AGENT, ROLES.SUPER_ADMIN, ROLES.ADMIN, ROLES.FINANCE, ROLES.UMUCO]);
+  await requireRole(context, [ROLES.AGENT, ROLES.SUPER_ADMIN, ROLES.ADMIN, ROLES.FINANCE, ROLES.INSTITUTION_USER]);
 
   const groupId = String(data?.groupId || "").trim();
   const status = String(data?.status || "").trim();

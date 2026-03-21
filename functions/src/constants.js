@@ -6,7 +6,8 @@ const ROLES = {
   LEADER: "leader",
   AGENT: "agent",
   MEMBER: "member",
-  UMUCO: "umuco",
+  INSTITUTION_USER: "institution_user", // generic role for all institution staff
+  UMUCO: "umuco",                        // legacy — migrated to institution_user
   FINANCE: "finance",
 };
 
@@ -80,6 +81,14 @@ const LEDGER_STATUS = {
   REVERSED: "reversed",
 };
 
+// Canonical transaction channel values. Every channel string in backend and
+// frontend must come from (or exactly match) one of these values.
+const TRANSACTION_CHANNEL = {
+  AGENT: "agent",                       // Field agent, cash in hand
+  INSTITUTION_BRANCH: "institution_branch", // Handled at partner institution branch
+  AGENT_QR: "agent_qr",                 // QR-code scan by agent (deposits only)
+};
+
 module.exports = {
   ROLES,
   USER_STATUS,
@@ -87,6 +96,7 @@ module.exports = {
   JOIN_REQUEST_STATUS,
   TRANSACTION_TYPE,
   TRANSACTION_STATUS,
+  TRANSACTION_CHANNEL,
   DEPOSIT_BATCH_STATUS,
   LOAN_STATUS,
   LOAN_TERMS,

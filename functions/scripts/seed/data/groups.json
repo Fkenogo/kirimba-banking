@@ -1,0 +1,26 @@
+[
+  {
+    "id": "seed_group_001",
+    "name": "Twese Hamwe",
+    "description": "Savings group for market vendors in Bujumbura centre",
+    "groupCode": "KRM-101",
+    "inviteCode": "KIR-1001",
+    "leaderId": "seed_leader_001",
+    "institutionId": "umuco",
+    "umucoAccountNo": "ACC-UMUCO-001",
+    "agentIds": ["seed_agent_001"],
+    "memberIds": ["seed_leader_001", "seed_member_001", "seed_member_002"]
+  },
+  {
+    "id": "seed_group_002",
+    "name": "Amahoro Savings",
+    "description": "Savings group for agricultural workers in Gitega province",
+    "groupCode": "KRM-102",
+    "inviteCode": "KIR-1002",
+    "leaderId": "seed_leader_002",
+    "institutionId": "umuco",
+    "umucoAccountNo": "ACC-UMUCO-002",
+    "agentIds": ["seed_agent_002"],
+    "memberIds": ["seed_leader_002", "seed_member_003"]
+  }
+]

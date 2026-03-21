@@ -11,6 +11,10 @@ service cloud.firestore {
         : "";
     }
 
+    function isSuperAdmin() {
+      return role() == "super_admin";
+    }
+
     function isAdmin() {
       return role() == "super_admin" || role() == "admin" || role() == "finance";
     }
@@ -19,8 +23,8 @@ service cloud.firestore {
       return role() == "agent";
     }
 
-    function isUmuco() {
-      return role() == "umuco";
+    function isInstitutionUser() {
+      return role() == "institution_user";
     }
 
     function isLeader() {
@@ -36,8 +40,9 @@ service cloud.firestore {
     }
 
     // Profiles: members read own profile; elevated roles can read all.
+    // isInstitutionUser() included so institution staff can resolve agent/member names in batch detail.
     match /users/{userId} {
-      allow read: if isOwner(userId) || isAdmin() || isAgent();
+      allow read: if isOwner(userId) || isAdmin() || isAgent() || isInstitutionUser();
       allow write: if false;
     }
 
@@ -55,11 +60,9 @@ service cloud.firestore {
       allow read: if isSignedIn() && (
         isAdmin() ||
         isAgent() ||
-        isUmuco() ||
-        (
-          isLeader() &&
-          resource.data.leaderId == request.auth.uid
-        ) ||
+        isInstitutionUser() ||
+        // The documented group leader can always read their group regardless of token-claim state.
+        resource.data.leaderId == request.auth.uid ||
         (
           exists(/databases/$(database)/documents/groupMembers/$(request.auth.uid)) &&
           get(/databases/$(database)/documents/groupMembers/$(request.auth.uid)).data.groupId == groupId
@@ -82,7 +85,7 @@ service cloud.firestore {
       allow read: if isSignedIn() && (
         isAdmin() ||
         isAgent() ||
-        isUmuco() ||
+        isInstitutionUser() ||
         resource.data.userId == request.auth.uid
       );
       allow write: if false;
@@ -92,18 +95,28 @@ service cloud.firestore {
       allow read: if isSignedIn() && (
         isAdmin() ||
         isAgent() ||
-        isUmuco() ||
+        isInstitutionUser() ||
         resource.data.userId == request.auth.uid
       );
       allow write: if false;
     }
 
     match /depositBatches/{batchId} {
-      allow read: if isSignedIn() && (isAdmin() || isAgent() || isUmuco());
+      allow read: if isSignedIn() && (
+        isAdmin() ||
+        isAgent() ||
+        // institution_user: scoped to own institution only
+        (isInstitutionUser() && resource.data.institutionId == request.auth.token.institutionId)
+      );
       allow write: if false;
     }
 
     match /kirimbaFund/{recordId} {
+      allow read: if isSignedIn() && isAdmin();
+      allow write: if false;
+    }
+
+    match /fundLedger/{entryId} {
       allow read: if isSignedIn() && isAdmin();
       allow write: if false;
     }
@@ -142,6 +155,16 @@ service cloud.firestore {
       allow write: if false;
     }
 
+    match /systemConfig/{configId} {
+      allow read: if isAdmin();
+      allow write: if false; // super_admin writes via Cloud Function (audit-logged)
+    }
+
+    match /auditLog/{logId} {
+      allow read: if isAdmin();
+      allow write: if false; // backend only
+    }
+
     match /agentReconciliations/{reconcId} {
       allow read: if isAdmin() || (isAgent() && resource.data.agentId == request.auth.uid);
       allow write: if false;
@@ -163,7 +186,10 @@ service cloud.firestore {
     }
 
     match /institutionPools/{institutionId} {
-      allow read: if isSignedIn() && (isAdmin() || isUmuco());
+      allow read: if isSignedIn() && (
+        isAdmin() ||
+        (isInstitutionUser() && institutionId == request.auth.token.institutionId)
+      );
       allow write: if false;
     }
 

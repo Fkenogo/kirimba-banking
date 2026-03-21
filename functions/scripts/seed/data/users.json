@@ -1,0 +1,128 @@
+[
+  {
+    "uid": "seed_super_admin_001",
+    "fullName": "Super Admin",
+    "phone": "+25761000001",
+    "role": "super_admin",
+    "pin": "123456",
+    "institutionId": null,
+    "groupId": null,
+    "isLeader": false,
+    "ledGroupId": null
+  },
+  {
+    "uid": "seed_admin_001",
+    "fullName": "Admin User",
+    "phone": "+25761000002",
+    "role": "admin",
+    "pin": "123456",
+    "institutionId": null,
+    "groupId": null,
+    "isLeader": false,
+    "ledGroupId": null
+  },
+  {
+    "uid": "seed_finance_001",
+    "fullName": "Finance User",
+    "phone": "+25761000003",
+    "role": "finance",
+    "pin": "123456",
+    "institutionId": null,
+    "groupId": null,
+    "isLeader": false,
+    "ledGroupId": null
+  },
+  {
+    "uid": "seed_inst_user_001",
+    "fullName": "Umuco Staff",
+    "phone": "+25761000004",
+    "role": "institution_user",
+    "pin": "123456",
+    "institutionId": "umuco",
+    "groupId": null,
+    "isLeader": false,
+    "ledGroupId": null
+  },
+  {
+    "uid": "seed_agent_001",
+    "fullName": "Agent Alpha",
+    "phone": "+25761000005",
+    "role": "agent",
+    "pin": "123456",
+    "institutionId": null,
+    "groupId": null,
+    "isLeader": false,
+    "ledGroupId": null
+  },
+  {
+    "uid": "seed_agent_002",
+    "fullName": "Agent Beta",
+    "phone": "+25761000006",
+    "role": "agent",
+    "pin": "123456",
+    "institutionId": null,
+    "groupId": null,
+    "isLeader": false,
+    "ledGroupId": null
+  },
+  {
+    "uid": "seed_leader_001",
+    "fullName": "Leader One",
+    "phone": "+25761000010",
+    "role": "leader",
+    "pin": "123456",
+    "memberId": "G01-001",
+    "institutionId": "umuco",
+    "groupId": "seed_group_001",
+    "isLeader": true,
+    "ledGroupId": "seed_group_001"
+  },
+  {
+    "uid": "seed_member_001",
+    "fullName": "Member Alpha",
+    "phone": "+25761000011",
+    "role": "member",
+    "pin": "123456",
+    "memberId": "G01-002",
+    "institutionId": "umuco",
+    "groupId": "seed_group_001",
+    "isLeader": false,
+    "ledGroupId": null
+  },
+  {
+    "uid": "seed_member_002",
+    "fullName": "Member Beta",
+    "phone": "+25761000012",
+    "role": "member",
+    "pin": "123456",
+    "memberId": "G01-003",
+    "institutionId": "umuco",
+    "groupId": "seed_group_001",
+    "isLeader": false,
+    "ledGroupId": null
+  },
+  {
+    "uid": "seed_leader_002",
+    "fullName": "Leader Two",
+    "phone": "+25761000013",
+    "role": "leader",
+    "pin": "123456",
+    "memberId": "G02-001",
+    "institutionId": "umuco",
+    "groupId": "seed_group_002",
+    "isLeader": true,
+    "ledGroupId": "seed_group_002"
+  },
+  {
+    "uid": "seed_member_003",
+    "fullName": "Member Gamma",
+    "phone": "+25761000014",
+    "role": "member",
+    "pin": "123456",
+    "memberId": "G02-002",
+    "institutionId": "umuco",
+    "groupId": "seed_group_002",
+    "isLeader": false,
+    "ledGroupId": null
+  }
+]

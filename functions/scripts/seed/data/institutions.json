@@ -1,0 +1,10 @@
+[
+  {
+    "id": "umuco",
+    "name": "Umuco Microfinance",
+    "code": "UMUCO",
+    "status": "active",
+    "contactEmail": null,
+    "notes": "Primary partner institution — manages physical cash deposits and batch confirmations"
+  }
+]

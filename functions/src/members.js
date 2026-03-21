@@ -25,10 +25,25 @@ if (!admin.apps.length) {
 
 const db = admin.firestore();
 const auth = admin.auth();
-const SUPPORTED_MEMBER_INSTITUTIONS = new Set(["umuco"]);
 
 function httpsError(code, message) {
   return new functions.https.HttpsError(code, message);
+}
+
+async function writeAuditLog(actorUid, actorRole, action, targetType, targetId, meta = {}) {
+  try {
+    await db.collection("auditLog").add({
+      actorId: actorUid,
+      actorRole,
+      action,
+      targetType,
+      targetId: targetId || null,
+      meta,
+      createdAt: FieldValue.serverTimestamp(),
+    });
+  } catch (err) {
+    console.error("[auditLog] Failed to write audit log:", err.message, { action, targetType, targetId });
+  }
 }
 
 function requireRole(context, allowedRoles) {
@@ -44,8 +59,24 @@ function requireRole(context, allowedRoles) {
   return role;
 }
 
+// Trim only — do NOT lowercase. Institution IDs are Firestore doc IDs and may
+// contain uppercase characters (e.g. "MVMICrbccp7YOljsPVG0").
 function normalizeInstitutionId(rawValue) {
-  return String(rawValue || "").trim().toLowerCase();
+  return String(rawValue || "").trim();
+}
+
+// Validates that an institution doc exists and is active. Throws on failure.
+async function requireActiveInstitution(institutionId) {
+  if (!institutionId) {
+    throw httpsError("invalid-argument", "institutionId is required.");
+  }
+  const snap = await db.collection("institutions").doc(institutionId).get();
+  if (!snap.exists) {
+    throw httpsError("not-found", `Institution "${institutionId}" not found.`);
+  }
+  if (snap.data().status !== "active") {
+    throw httpsError("failed-precondition", `Institution "${institutionId}" is not currently active.`);
+  }
 }
 
 async function requireActiveMember(context) {
@@ -264,6 +295,9 @@ exports.approveMember = functions.https.onCall(async (data, context) => {
     }
   }
 
+  const actorRole = context.auth.token?.role;
+  await writeAuditLog(context.auth.uid, actorRole, "member_approved", "user", userId, { memberId });
+
   return { success: true };
 });
 
@@ -286,6 +320,9 @@ exports.rejectMember = functions.https.onCall(async (data, context) => {
     { merge: true }
   );
 
+  const actorRole = context.auth.token?.role;
+  await writeAuditLog(context.auth.uid, actorRole, "member_rejected", "user", userId, { reason });
+
   return { success: true };
 });
 
@@ -300,9 +337,10 @@ exports.createGroup = functions.https.onCall(async (data, context) => {
   }
 
   const institutionId = normalizeInstitutionId(user.institutionId);
-  if (!institutionId || !SUPPORTED_MEMBER_INSTITUTIONS.has(institutionId)) {
+  if (!institutionId) {
     throw httpsError("failed-precondition", "Select your institution before creating a group.");
   }
+  await requireActiveInstitution(institutionId);
 
   const [groupCode, inviteCode] = await Promise.all([
     getUniqueGroupCode(),
@@ -341,7 +379,6 @@ exports.approveGroup = functions.https.onCall(async (data, context) => {
   await requireRole(context, [ROLES.SUPER_ADMIN, ROLES.ADMIN]);
 
   const groupId = String(data?.groupId || "").trim();
-
   if (!groupId) {
     throw httpsError("invalid-argument", "groupId is required.");
   }
@@ -350,6 +387,8 @@ exports.approveGroup = functions.https.onCall(async (data, context) => {
   let leaderId = null;
 
   await db.runTransaction(async (tx) => {
+    // ── Phase 1: ALL reads (must precede any write in a Firestore transaction) ─
+
     const groupSnap = await tx.get(groupRef);
     if (!groupSnap.exists) {
       throw httpsError("not-found", "Group not found.");
@@ -358,22 +397,39 @@ exports.approveGroup = functions.https.onCall(async (data, context) => {
     const group = groupSnap.data() || {};
     leaderId = group.leaderId || null;
 
-    tx.set(
-      groupRef,
-      {
-        status: GROUP_STATUS.ACTIVE,
-        approvedAt: FieldValue.serverTimestamp(),
-      },
-      { merge: true }
-    );
+    // Read the leader's groupMembers and user docs before any writes.
+    let leaderGroupMemberSnap = null;
+    let leaderUserSnap = null;
+    if (leaderId) {
+      [leaderGroupMemberSnap, leaderUserSnap] = await Promise.all([
+        tx.get(db.collection("groupMembers").doc(leaderId)),
+        tx.get(db.collection("users").doc(leaderId)),
+      ]);
+    }
+
+    // ── Phase 2: ALL writes ───────────────────────────────────────────────────
+
+    // Ensure institutionId is always stamped on the group. If the group was
+    // created before institutionId was enforced, fill it from the leader's
+    // user doc so submitBatch can route batches to the correct institution.
+    const existingInstId = group.institutionId || null;
+    const leaderInstId = leaderUserSnap?.exists ? (leaderUserSnap.data().institutionId || null) : null;
+    const groupActivatePayload = {
+      status: GROUP_STATUS.ACTIVE,
+      approvedAt: FieldValue.serverTimestamp(),
+    };
+    if (!existingInstId && leaderInstId) {
+      groupActivatePayload.institutionId = leaderInstId;
+    }
+    tx.set(groupRef, groupActivatePayload, { merge: true });
 
     if (!leaderId) {
+      console.warn(`[approveGroup] group ${groupId} has no leaderId — activated without leader setup.`);
       return;
     }
 
     const leaderRef = db.collection("users").doc(leaderId);
     const leaderGroupMemberRef = db.collection("groupMembers").doc(leaderId);
-    const leaderGroupMemberSnap = await tx.get(leaderGroupMemberRef);
 
     tx.set(
       leaderRef,
@@ -389,19 +445,26 @@ exports.approveGroup = functions.https.onCall(async (data, context) => {
       { merge: true }
     );
 
-    tx.set(
-      leaderGroupMemberRef,
-      {
-        userId: leaderId,
-        groupId,
-        joinedAt: leaderGroupMemberSnap.exists
-          ? leaderGroupMemberSnap.data()?.joinedAt || FieldValue.serverTimestamp()
-          : FieldValue.serverTimestamp(),
-        isActive: true,
-        updatedAt: FieldValue.serverTimestamp(),
-      },
-      { merge: true }
-    );
+    const leaderGmPayload = {
+      userId: leaderId,
+      groupId,
+      joinedAt: leaderGroupMemberSnap.exists
+        ? leaderGroupMemberSnap.data()?.joinedAt || FieldValue.serverTimestamp()
+        : FieldValue.serverTimestamp(),
+      isActive: true,
+      updatedAt: FieldValue.serverTimestamp(),
+    };
+
+    // Initialise balance fields only on new entries — never overwrite real balances.
+    if (!leaderGroupMemberSnap.exists) {
+      leaderGmPayload.personalSavings = 0;
+      leaderGmPayload.pendingSavings = 0;
+      leaderGmPayload.lockedSavings = 0;
+      leaderGmPayload.creditLimit = 0;
+      leaderGmPayload.availableCredit = 0;
+    }
+
+    tx.set(leaderGroupMemberRef, leaderGmPayload, { merge: true });
 
     if (!leaderGroupMemberSnap.exists) {
       tx.set(
@@ -416,8 +479,17 @@ exports.approveGroup = functions.https.onCall(async (data, context) => {
   });
 
   if (leaderId) {
-    await auth.setCustomUserClaims(leaderId, { role: ROLES.LEADER });
+    try {
+      await auth.setCustomUserClaims(leaderId, { role: ROLES.LEADER });
+    } catch (claimErr) {
+      // Claim failure is non-fatal — log and continue. The leader can still operate
+      // and the backfillLeaderGroupMembership utility can fix claims later.
+      console.error(`[approveGroup] Failed to set leader claim for ${leaderId}:`, claimErr.message);
+    }
   }
+
+  const actorRole = context.auth.token?.role;
+  await writeAuditLog(context.auth.uid, actorRole, "group_approved", "group", groupId, { leaderId });
 
   return { success: true };
 });
@@ -435,9 +507,10 @@ exports.joinGroup = functions.https.onCall(async (data, context) => {
   }
 
   const memberInstitutionId = normalizeInstitutionId(user.institutionId);
-  if (!memberInstitutionId || !SUPPORTED_MEMBER_INSTITUTIONS.has(memberInstitutionId)) {
+  if (!memberInstitutionId) {
     throw httpsError("failed-precondition", "Select your institution before joining a group.");
   }
+  await requireActiveInstitution(memberInstitutionId);
 
   const groupQuery = await db
     .collection("groups")
@@ -690,9 +763,10 @@ exports.joinGroupByInviteCode = functions.https.onCall(async (data, context) => 
   }
 
   const memberInstitutionId = normalizeInstitutionId(user.institutionId);
-  if (!memberInstitutionId || !SUPPORTED_MEMBER_INSTITUTIONS.has(memberInstitutionId)) {
+  if (!memberInstitutionId) {
     throw httpsError("failed-precondition", "Select your institution before joining a group.");
   }
+  await requireActiveInstitution(memberInstitutionId);
 
   const inviteCode = String(data?.inviteCode || "").trim().toUpperCase();
   if (!inviteCode) {
@@ -775,9 +849,7 @@ exports.setMemberInstitution = functions.https.onCall(async (data, context) => {
   const { uid } = await requireActiveMember(context);
   const institutionId = normalizeInstitutionId(data?.institutionId);
 
-  if (!institutionId || !SUPPORTED_MEMBER_INSTITUTIONS.has(institutionId)) {
-    throw httpsError("invalid-argument", "Select a supported institution.");
-  }
+  await requireActiveInstitution(institutionId);
 
   await db.collection("users").doc(uid).set(
     {
@@ -788,6 +860,28 @@ exports.setMemberInstitution = functions.https.onCall(async (data, context) => {
   );
 
   return { success: true, institutionId };
+});
+
+// Returns active institutions for member-facing institution selection.
+// Callable by any authenticated active member.
+exports.getActiveInstitutions = functions.https.onCall(async (data, context) => {
+  await requireActiveMember(context);
+
+  const snap = await db
+    .collection("institutions")
+    .where("status", "==", "active")
+    .get();
+
+  const institutions = snap.docs.map((doc) => {
+    const d = doc.data();
+    return {
+      id: doc.id,
+      name: d.name || doc.id,
+      code: d.code || null,
+    };
+  });
+
+  return { institutions };
 });
 
 exports.getGroupMembers = functions.https.onCall(async (data, context) => {
@@ -883,6 +977,7 @@ exports.initiateGroupSplit = functions.https.onCall(async (data, context) => {
     totalSavings: 0,
     pendingSavings: 0,
     memberCount: memberIdsToMove.length,
+    institutionId: sourceGroup.institutionId || null,
     umucoAccountNo: "",
     splitFromGroupId: sourceGroupId,
     createdAt: FieldValue.serverTimestamp(),
@@ -917,6 +1012,134 @@ exports.initiateGroupSplit = functions.https.onCall(async (data, context) => {
     newInviteCode,
     movedCount: memberIdsToMove.length,
   };
+});
+
+/**
+ * One-time backfill: create missing groupMembers entries for approved leaders.
+ * Safe to re-run — skips leaders that already have a complete entry.
+ * Also ensures users.groupId, wallets/{uid}, memberId, and the Auth
+ * custom claim (role: leader) are all present and correct.
+ */
+exports.backfillLeaderGroupMembership = functions.https.onCall(async (_, context) => {
+  await requireRole(context, [ROLES.SUPER_ADMIN, ROLES.ADMIN]);
+
+  const leadersSnap = await db.collection("users").where("role", "==", ROLES.LEADER).get();
+
+  const results = { processed: 0, created: 0, skipped: 0, claimsFixed: 0, errors: [] };
+
+  for (const leaderDoc of leadersSnap.docs) {
+    const leaderId = leaderDoc.id;
+    const leaderData = leaderDoc.data();
+    results.processed++;
+
+    // Prefer ledGroupId — it is the authoritative field set by approveGroup
+    // and is not subject to manual data-entry errors that can affect groupId.
+    const groupId = leaderData.ledGroupId || leaderData.groupId;
+    if (!groupId) {
+      results.errors.push(`${leaderId}: no groupId or ledGroupId — skipped`);
+      continue;
+    }
+
+    const gmRef = db.collection("groupMembers").doc(leaderId);
+    const [gmSnap, groupSnap, walletSnap] = await Promise.all([
+      gmRef.get(),
+      db.collection("groups").doc(groupId).get(),
+      db.collection("wallets").doc(leaderId).get(),
+    ]);
+
+    // Patch existing entry if it's missing groupId (edge case from old schema)
+    if (gmSnap.exists && !gmSnap.data().groupId) {
+      await gmRef.set({ groupId, updatedAt: FieldValue.serverTimestamp() }, { merge: true });
+      results.skipped++;
+      // Still fall through to fix Auth claim below.
+    } else if (gmSnap.exists) {
+      results.skipped++;
+      // Still fall through to fix Auth claim below.
+    } else {
+      // groupMembers doc is fully missing — create it.
+      try {
+        const batch = db.batch();
+
+        batch.set(gmRef, {
+          userId: leaderId,
+          groupId,
+          joinedAt: leaderData.approvedAt || FieldValue.serverTimestamp(),
+          isActive: true,
+          personalSavings: 0,
+          pendingSavings: 0,
+          lockedSavings: 0,
+          creditLimit: 0,
+          availableCredit: 0,
+          updatedAt: FieldValue.serverTimestamp(),
+        });
+
+        // Ensure users.groupId is set
+        const userPatch = { updatedAt: FieldValue.serverTimestamp() };
+        if (!leaderData.groupId) {
+          userPatch.groupId = groupId;
+        }
+        // Assign memberId if somehow missing (defensive — normally set by approveMember)
+        if (!leaderData.memberId) {
+          userPatch.memberId = await getUniqueMemberId(leaderId);
+        }
+        if (Object.keys(userPatch).length > 1) {
+          batch.set(
+            db.collection("users").doc(leaderId),
+            userPatch,
+            { merge: true }
+          );
+        }
+
+        // Create wallet if missing
+        if (!walletSnap.exists) {
+          batch.set(db.collection("wallets").doc(leaderId), {
+            userId: leaderId,
+            balanceConfirmed: 0,
+            balancePending: 0,
+            balanceLocked: 0,
+            availableBalance: 0,
+            createdAt: FieldValue.serverTimestamp(),
+            updatedAt: FieldValue.serverTimestamp(),
+          });
+        }
+
+        // Increment group memberCount
+        if (groupSnap.exists) {
+          batch.set(
+            db.collection("groups").doc(groupId),
+            { memberCount: FieldValue.increment(1), updatedAt: FieldValue.serverTimestamp() },
+            { merge: true }
+          );
+        }
+
+        await batch.commit();
+        results.created++;
+      } catch (err) {
+        results.errors.push(`${leaderId}: ${err.message}`);
+        continue;
+      }
+    }
+
+    // Always ensure the Auth custom claim is role: leader.
+    // This fixes the case where approveGroup's setCustomUserClaims call was
+    // never reached (e.g., it ran before the fix or failed after the transaction).
+    // A stale "member" claim causes isLeader() → false in Firestore rules,
+    // which combined with a missing groupMembers doc produces permission-denied.
+    try {
+      const authUser = await auth.getUser(leaderId).catch(() => null);
+      if (authUser) {
+        const currentClaim = authUser.customClaims?.role;
+        if (currentClaim !== ROLES.LEADER) {
+          await auth.setCustomUserClaims(leaderId, { role: ROLES.LEADER });
+          results.claimsFixed++;
+        }
+      }
+    } catch (claimErr) {
+      results.errors.push(`${leaderId} (claim): ${claimErr.message}`);
+    }
+  }
+
+  return { success: true, ...results };
 });
 
 exports.getPendingApprovals = functions.https.onCall(async (_, context) => {
@@ -1010,4 +1233,61 @@ exports.getPendingApprovals = functions.https.onCall(async (_, context) => {
       diag
     );
   }
+});
+
+exports.getGroupDetail = functions.https.onCall(async (data, context) => {
+  if (!context.auth || !context.auth.uid) {
+    throw httpsError("unauthenticated", "Authentication required.");
+  }
+  const role = context.auth.token?.role;
+  if (![ROLES.SUPER_ADMIN, ROLES.ADMIN].includes(role)) {
+    throw httpsError("permission-denied", "Insufficient permissions.");
+  }
+
+  const groupId = String(data?.groupId || "").trim();
+  if (!groupId) {
+    throw httpsError("invalid-argument", "groupId is required.");
+  }
+
+  const groupSnap = await db.collection("groups").doc(groupId).get();
+  if (!groupSnap.exists) {
+    throw httpsError("not-found", "Group not found.");
+  }
+
+  const group = groupSnap.data();
+
+  // Parallel: leader, institution, member list, active loans
+  const [leaderSnap, institutionSnap, membersSnap, activeLoansSnap] = await Promise.all([
+    group.leaderId ? db.collection("users").doc(group.leaderId).get() : Promise.resolve(null),
+    group.institutionId ? db.collection("institutions").doc(group.institutionId).get() : Promise.resolve(null),
+    db.collection("groupMembers").where("groupId", "==", groupId).get(),
+    db.collection("loans").where("groupId", "==", groupId).where("status", "==", "active").get(),
+  ]);
+
+  const leader = leaderSnap && leaderSnap.exists
+    ? { uid: group.leaderId, fullName: leaderSnap.data().fullName || leaderSnap.data().name || null, phone: leaderSnap.data().phone || null }
+    : { uid: group.leaderId || null, fullName: null, phone: null };
+
+  const institutionName = institutionSnap && institutionSnap.exists
+    ? (institutionSnap.data().name || null)
+    : null;
+
+  const members = membersSnap.docs.map((d) => ({ userId: d.id, ...d.data() }));
+
+  const activeLoans = activeLoansSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
+  const activeLoansCount = activeLoans.length;
+  const activeOutstandingBIF = activeLoans.reduce((s, l) => s + Number(l.remainingDue || 0), 0);
+
+  return {
+    success: true,
+    group: {
+      id: groupId,
+      ...group,
+      institutionName,
+      leader,
+      memberList: members,
+      activeLoansCount,
+      activeOutstandingBIF,
+    },
+  };
 });

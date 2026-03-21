@@ -74,6 +74,7 @@ async function provisionUserWithRole({
   role,
   callerUid,
   userExtra = {},
+  extraClaims = {},
 }) {
   try {
     if (!isNonEmptyString(fullName) || fullName.trim().length < 3 || fullName.trim().length > 100) {
@@ -113,7 +114,7 @@ async function provisionUserWithRole({
     }
 
     try {
-      await auth.setCustomUserClaims(uid, { role });
+      await auth.setCustomUserClaims(uid, { role, ...extraClaims });
     } catch (err) {
       functions.logger.error("auth.setCustomUserClaims failed", {
         code: err?.errorInfo?.code || err?.code || "unknown",
@@ -295,18 +296,28 @@ const provisionAdmin = functions.https.onCall(async (data, context) => {
 const provisionInstitutionUser = functions.https.onCall(async (data, context) => {
   const callerUid = requireRoles(context, [ROLES.SUPER_ADMIN, ROLES.ADMIN]);
   const { fullName, phone, pin, institutionId } = data;
-  const extra = {};
-  if (isNonEmptyString(institutionId)) {
-    extra.institutionId = institutionId.trim();
+
+  const trimmedInstitutionId = isNonEmptyString(institutionId) ? institutionId.trim() : null;
+  if (!trimmedInstitutionId) {
+    throw new functions.https.HttpsError("invalid-argument", "institutionId is required.");
+  }
+
+  const instSnap = await db.collection("institutions").doc(trimmedInstitutionId).get();
+  if (!instSnap.exists) {
+    throw new functions.https.HttpsError("not-found", `Institution "${trimmedInstitutionId}" not found.`);
+  }
+  if (instSnap.data().status === "suspended") {
+    throw new functions.https.HttpsError("failed-precondition", `Institution "${trimmedInstitutionId}" is suspended.`);
   }
 
   const { uid } = await provisionUserWithRole({
     fullName,
     phone,
     pin,
-    role: ROLES.UMUCO,
+    role: ROLES.INSTITUTION_USER,
     callerUid,
-    userExtra: extra,
+    userExtra: { institutionId: trimmedInstitutionId },
+    extraClaims: { institutionId: trimmedInstitutionId },
   });
 
   return { success: true, institutionUserId: uid };
