@@ -20,7 +20,9 @@ export default function MyQRCodeScreen({ user }) {
         const data = userSnap.data();
         setProfile(data);
 
-        const gid = data.groupId;
+        // Leaders have ledGroupId → use that first so they read the group they lead.
+        // Regular members only have groupId.
+        const gid = data.ledGroupId || data.groupId;
         if (gid) {
           const groupSnap = await getDoc(doc(db, "groups", gid));
           if (groupSnap.exists()) {
@@ -54,8 +56,9 @@ export default function MyQRCodeScreen({ user }) {
   }
 
   const memberId = profile?.memberId;
-  const memberName = profile?.name ?? profile?.fullName ?? user.email ?? "Member";
-  const qrValue = JSON.stringify({ memberId: memberId ?? null });
+  const memberName = profile?.fullName ?? user.email ?? "Member";
+  // Fall back to uid so the QR is always scannable even before memberId is assigned
+  const qrValue = JSON.stringify({ memberId: memberId ?? user.uid });
 
   return (
     <main className="min-h-screen bg-slate-50 flex flex-col">
@@ -69,23 +72,15 @@ export default function MyQRCodeScreen({ user }) {
 
         {/* QR card */}
         <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-8 flex flex-col items-center w-full">
-          {memberId ? (
-            <div className="p-4 bg-white rounded-xl border border-slate-100">
-              <QRCodeSVG
-                value={qrValue}
-                size={220}
-                bgColor="#ffffff"
-                fgColor="#0f172a"
-                level="M"
-              />
-            </div>
-          ) : (
-            <div className="w-[220px] h-[220px] flex items-center justify-center bg-slate-100 rounded-xl border border-slate-200">
-              <p className="text-xs text-slate-400 text-center px-4">
-                Member ID not assigned yet
-              </p>
-            </div>
-          )}
+          <div className="p-4 bg-white rounded-xl border border-slate-100">
+            <QRCodeSVG
+              value={qrValue}
+              size={220}
+              bgColor="#ffffff"
+              fgColor="#0f172a"
+              level="M"
+            />
+          </div>
 
           <div className="mt-6 text-center space-y-1">
             <p className="text-base font-semibold text-slate-900">{memberName}</p>

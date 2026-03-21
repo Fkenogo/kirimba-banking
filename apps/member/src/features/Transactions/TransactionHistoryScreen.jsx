@@ -18,8 +18,9 @@ const STATUS_CLASSES = {
 };
 
 const CHANNEL_LABELS = {
-  agent:        "Agent",
-  umuco_branch: "Institution Branch",
+  agent:               "Agent",
+  institution_branch:  "Institution Branch",
+  agent_qr:            "Agent (QR)",
 };
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -115,8 +116,6 @@ function TransactionModal({ tx, onClose }) {
           <DetailRow label="Status"         value={tx.status?.replace(/_/g, " ")} />
           <DetailRow label="Group ID"       value={tx.groupId} />
           <DetailRow label="Channel"        value={CHANNEL_LABELS[tx.channel] || tx.channel} />
-          <DetailRow label="Wallet ID"      value={tx.walletId} />
-          <DetailRow label="Ledger Impact"  value={formatLedgerImpact(tx.ledgerImpact)} />
           <DetailRow label="Balance Before" value={formatBIF(tx.balanceBefore)} />
           <DetailRow label="Balance After"  value={formatBIF(tx.balanceAfter)} />
           {tx.notes && <DetailRow label="Notes" value={tx.notes} />}

@@ -149,7 +149,7 @@ export default function SavingsDashboardScreen({ user }) {
   const goalReached = rawProgress >= 100;
 
   // Borrowing power (70% rule)
-  const activeLoansTotal = Number(group.activeLoansTotal || 0);
+  const activeLoansTotal = Number(group.totalLoansOutstanding || 0);
   const maxBorrowing = totalSavings * 0.7;
   const availableBorrowing = maxBorrowing - activeLoansTotal;
   const limitReached = availableBorrowing <= 0;

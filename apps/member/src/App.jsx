@@ -7,8 +7,10 @@ import LoginPage from "./pages/LoginPage";
 import MemberHomeScreen from "./features/Home/MemberHomeScreen";
 import MemberDashboardScreen from "./features/Dashboard/MemberDashboardScreen";
 import DepositRequestScreen from "./features/Deposits/DepositRequestScreen";
+import FindAgentScreen from "./features/Deposits/FindAgentScreen";
 import TransactionHistoryScreen from "./features/Transactions/TransactionHistoryScreen";
 import RequestLoanScreen from "./features/Loans/RequestLoanScreen";
+import MyLoansScreen from "./features/Loans/MyLoansScreen";
 import WithdrawalRequestScreen from "./features/Withdrawals/WithdrawalRequestScreen";
 import MyQRCodeScreen from "./features/Profile/MyQRCodeScreen";
 import InstitutionSelectionScreen from "./features/Profile/InstitutionSelectionScreen";
@@ -145,6 +147,10 @@ export default function App() {
         element={user ? <DepositRequestScreen user={user} /> : <Navigate to={`${BASE_PATH}/login`} replace />}
       />
       <Route
+        path={`${BASE_PATH}/find-agent`}
+        element={user ? <FindAgentScreen /> : <Navigate to={`${BASE_PATH}/login`} replace />}
+      />
+      <Route
         path={`${BASE_PATH}/transactions`}
         element={user ? <TransactionHistoryScreen user={user} /> : <Navigate to={`${BASE_PATH}/login`} replace />}
       />
@@ -155,6 +161,10 @@ export default function App() {
       <Route
         path={`${BASE_PATH}/loans/request`}
         element={user ? <RequestLoanScreen user={user} /> : <Navigate to={`${BASE_PATH}/login`} replace />}
+      />
+      <Route
+        path={`${BASE_PATH}/loans/my`}
+        element={user ? <MyLoansScreen user={user} /> : <Navigate to={`${BASE_PATH}/login`} replace />}
       />
       <Route
         path={`${BASE_PATH}/my-qr`}

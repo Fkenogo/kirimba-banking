@@ -36,8 +36,9 @@ export default function GroupCodeScreen({ user }) {
   }, [user?.uid]);
 
   async function copyCode() {
-    if (!group?.inviteCode) return;
-    await navigator.clipboard.writeText(group.inviteCode);
+    const code = group?.inviteCode || group?.groupCode;
+    if (!code) return;
+    await navigator.clipboard.writeText(code);
     setCopied(true);
     setTimeout(() => setCopied(false), 1600);
   }
@@ -56,7 +57,7 @@ export default function GroupCodeScreen({ user }) {
         <section className="bg-white rounded-2xl border border-slate-200 shadow-sm px-5 py-5 space-y-3">
           <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Group Code</p>
           <div className="flex items-center justify-between gap-3">
-            <p className="text-3xl font-mono font-bold text-blue-700 tracking-widest">{group.inviteCode}</p>
+            <p className="text-3xl font-mono font-bold text-blue-700 tracking-widest">{group.inviteCode || group.groupCode || "—"}</p>
             <button
               onClick={copyCode}
               className="text-sm font-medium text-blue-600 hover:text-blue-800 border border-blue-200 rounded-lg px-3 py-1.5"

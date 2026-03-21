@@ -11,7 +11,8 @@ const MEMBER_MENU_ITEMS = [
   { label: "Savings Dashboard", path: `${BASE_PATH}/dashboard`, icon: "💰" },
   { label: "Deposit", path: `${BASE_PATH}/deposit`, icon: "⬇️" },
   { label: "Withdraw", path: `${BASE_PATH}/withdraw`, icon: "⬆️" },
-  { label: "Request Loan", path: `${BASE_PATH}/loans/request`, icon: "🏦" },
+  { label: "My Loans", path: `${BASE_PATH}/loans/my`, icon: "🏦" },
+  { label: "Request Loan", path: `${BASE_PATH}/loans/request`, icon: "💳" },
   { label: "Transactions", path: `${BASE_PATH}/transactions`, icon: "📄" },
   { label: "My QR Code", path: `${BASE_PATH}/my-qr`, icon: "🔲" },
   { label: "Join with Group Code", path: `${BASE_PATH}/join-group`, icon: "👥" },
@@ -33,6 +34,7 @@ export default function MemberHomeScreen({ user, role }) {
   const [isSigningOut, setIsSigningOut] = useState(false);
   const [error, setError] = useState("");
   const [institutionId, setInstitutionId] = useState("");
+  const [institutionName, setInstitutionName] = useState("");
   const [groupId, setGroupId] = useState("");
   const isLeader = role === "leader";
 
@@ -42,10 +44,21 @@ export default function MemberHomeScreen({ user, role }) {
       try {
         const profileSnap = await getDoc(doc(db, "users", user.uid));
         if (profileSnap.exists()) {
-          setInstitutionId(String(profileSnap.data().institutionId || ""));
+          const rawId = String(profileSnap.data().institutionId || "");
+          setInstitutionId(rawId);
+          if (rawId) {
+            // Resolve the institution name from the institutions collection
+            const instSnap = await getDoc(doc(db, "institutions", rawId));
+            if (instSnap.exists()) {
+              setInstitutionName(instSnap.data().name || rawId);
+            } else {
+              setInstitutionName(rawId);
+            }
+          }
         }
       } catch {
         setInstitutionId("");
+        setInstitutionName("");
       }
 
       try {
@@ -91,7 +104,7 @@ export default function MemberHomeScreen({ user, role }) {
           >
             <p className="text-[11px] uppercase tracking-wide text-slate-500">Institution</p>
             <p className="text-sm font-semibold text-slate-900 mt-0.5">
-              {institutionId ? `Selected: ${institutionId}` : "Not selected"}
+              {institutionId ? `Selected: ${institutionName || institutionId}` : "Not selected"}
             </p>
           </article>
           <article

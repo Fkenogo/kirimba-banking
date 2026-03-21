@@ -35,8 +35,10 @@ const STATUS_CLASSES = {
   pending_confirmation: "text-yellow-700 bg-yellow-50",
   pending_approval: "text-yellow-700 bg-yellow-50",
   pending: "text-yellow-700 bg-yellow-50",
+  submitted: "text-blue-700 bg-blue-50",
   active: "text-blue-700 bg-blue-50",
   rejected: "text-red-600 bg-red-50",
+  flagged: "text-red-700 bg-red-50",
 };
 
 export default function MemberDashboardScreen({ user }) {
@@ -129,7 +131,7 @@ export default function MemberDashboardScreen({ user }) {
     );
   }
 
-  const creditLimit = Number(wallet?.balanceConfirmed || 0) * 1.5;
+  const creditLimit = Math.max(0, Number(wallet?.balanceConfirmed || 0) * 1.5 - Number(wallet?.balanceLocked || 0));
 
   return (
     <main className="min-h-screen bg-slate-50 pb-10">
