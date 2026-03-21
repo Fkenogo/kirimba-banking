@@ -9,7 +9,7 @@ function formatAmount(n) {
 
 function formatDate(value) {
   if (!value) return "—";
-  const date = value.toDate ? value.toDate() : new Date(value);
+  const date = value._seconds ? new Date(value._seconds * 1000) : value.toDate ? value.toDate() : new Date(value);
   if (Number.isNaN(date.getTime())) return "—";
   return date.toLocaleString([], {
     month: "short",

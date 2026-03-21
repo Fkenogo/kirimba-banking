@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { httpsCallable } from "firebase/functions";
 import { functions } from "../../services/firebase";
@@ -34,11 +34,25 @@ export default function CreateInstitutionUserScreen() {
   const [pin, setPin] = useState("");
   const [pinTouched, setPinTouched] = useState(false);
   const [institutionId, setInstitutionId] = useState("");
+  const [institutions, setInstitutions] = useState([]);
+  const [institutionsLoading, setInstitutionsLoading] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState("");
   const [createdUserId, setCreatedUserId] = useState(null);
   const [submittedPhone, setSubmittedPhone] = useState("");
   const pinLengthError = pinTouched && pin.length < 6 ? "PIN must be exactly 6 digits." : "";
+
+  useEffect(() => {
+    const fn = httpsCallable(functions, "getInstitutions");
+    fn({})
+      .then((res) => {
+        const active = (res.data?.institutions || []).filter((i) => i.status === "active");
+        setInstitutions(active);
+        if (active.length === 1) setInstitutionId(active[0].id);
+      })
+      .catch(() => {})
+      .finally(() => setInstitutionsLoading(false));
+  }, []);
 
   const handleSubmit = async (event) => {
     event.preventDefault();
@@ -79,7 +93,7 @@ export default function CreateInstitutionUserScreen() {
           <section className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
             <h1 className="text-xl font-semibold text-slate-900">Institution User Created</h1>
             <p className="mt-3 text-sm text-slate-600">
-              The new institution staff account can now access the Umuco app.
+              The new institution staff account can now access the institution portal.
             </p>
             <p className="mt-2 text-sm text-slate-600">
               <span className="font-medium">Phone:</span> {submittedPhone}
@@ -165,13 +179,23 @@ export default function CreateInstitutionUserScreen() {
               {pinLengthError ? <span className="mt-1 block text-xs text-red-600">{pinLengthError}</span> : null}
             </label>
             <label className="block text-sm font-medium text-slate-700">
-              Institution ID (optional)
-              <input
-                type="text"
+              Institution
+              <select
+                required
                 value={institutionId}
                 onChange={(e) => setInstitutionId(e.target.value)}
-                className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
-              />
+                disabled={institutionsLoading}
+                className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm disabled:opacity-60"
+              >
+                <option value="">
+                  {institutionsLoading ? "Loading institutions…" : "Select institution"}
+                </option>
+                {institutions.map((inst) => (
+                  <option key={inst.id} value={inst.id}>
+                    {inst.name} ({inst.code})
+                  </option>
+                ))}
+              </select>
             </label>
 
             {error ? <p className="text-sm text-red-600">{error}</p> : null}

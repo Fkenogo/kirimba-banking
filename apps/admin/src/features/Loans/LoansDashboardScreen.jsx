@@ -16,7 +16,7 @@ function formatAmount(n) {
 
 function formatDate(value) {
   if (!value) return "—";
-  const date = value.toDate ? value.toDate() : new Date(value);
+  const date = value._seconds ? new Date(value._seconds * 1000) : value.toDate ? value.toDate() : new Date(value);
   if (Number.isNaN(date.getTime())) return "—";
   return date.toLocaleString([], {
     month: "short",
@@ -41,6 +41,7 @@ export default function LoansDashboardScreen() {
     activeCount: 0,
     overdueCount: 0,
     defaultedCount: 0,
+    activeOutstandingBIF: 0,
   });
   const [loansByTab, setLoansByTab] = useState({
     pending: [],
@@ -62,6 +63,7 @@ export default function LoansDashboardScreen() {
         activeCount: Number(data.summary?.activeCount || 0),
         overdueCount: Number(data.summary?.overdueCount || 0),
         defaultedCount: Number(data.summary?.defaultedCount || 0),
+        activeOutstandingBIF: Number(data.summary?.activeOutstandingBIF || 0),
       });
 
       setLoansByTab({
@@ -114,11 +116,12 @@ export default function LoansDashboardScreen() {
           </section>
         )}
 
-        <section className="grid grid-cols-2 gap-3 md:grid-cols-4">
+        <section className="grid grid-cols-2 gap-3 md:grid-cols-5">
           <MetricCard label="Pending" value={summary.pendingCount} tone="amber" />
           <MetricCard label="Active" value={summary.activeCount} tone="blue" />
           <MetricCard label="Overdue" value={summary.overdueCount} tone="rose" />
           <MetricCard label="Defaulted" value={summary.defaultedCount} tone="slate" />
+          <MetricCard label="Outstanding" value={formatAmount(summary.activeOutstandingBIF)} tone="blue" />
         </section>
 
         <section className="rounded-xl border border-slate-200 bg-white shadow-sm overflow-hidden">
@@ -163,9 +166,9 @@ export default function LoansDashboardScreen() {
                 <tbody className="divide-y divide-slate-100">
                   {currentRows.map((loan) => (
                     <tr key={loan.id}>
-                      <td className="px-4 py-3 font-mono text-xs text-blue-700">{loan.id}</td>
-                      <td className="px-4 py-3 text-slate-700">{loan.userId || loan.memberId || "—"}</td>
-                      <td className="px-4 py-3 text-slate-700">{loan.groupId || "—"}</td>
+                      <td className="px-4 py-3 font-mono text-xs text-blue-700">{loan.id.slice(0, 8)}…</td>
+                      <td className="px-4 py-3 text-slate-700">{loan.memberName || loan.userId || "—"}</td>
+                      <td className="px-4 py-3 text-slate-700">{loan.groupName || loan.groupId || "—"}</td>
                       <td className="px-4 py-3 text-right font-medium text-slate-900">{formatAmount(loan.amount)}</td>
                       <td className="px-4 py-3 text-right text-slate-700">{formatAmount(loan.remainingDue)}</td>
                       <td className="px-4 py-3 capitalize text-slate-700">{readableStatus(loan.status)}</td>
@@ -201,7 +204,7 @@ function MetricCard({ label, value, tone }) {
   return (
     <article className={`rounded-xl border px-4 py-3 ${toneClass}`}>
       <p className="text-xs uppercase tracking-wide opacity-70">{label}</p>
-      <p className="mt-1 text-xl font-semibold">{Number(value || 0)}</p>
+      <p className="mt-1 text-xl font-semibold">{value}</p>
     </article>
   );
 }

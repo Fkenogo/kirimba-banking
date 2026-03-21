@@ -76,6 +76,8 @@ export default function ApprovalsScreen() {
   const [members, setMembers] = useState([]);
   const [groups, setGroups] = useState([]);
   const [leaderNames, setLeaderNames] = useState({});
+  const [withdrawals, setWithdrawals] = useState([]);
+  const [withdrawalsLoading, setWithdrawalsLoading] = useState(true);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
@@ -83,10 +85,25 @@ export default function ApprovalsScreen() {
   const [workingGroupId, setWorkingGroupId] = useState(null);
   const [activeRejectMemberId, setActiveRejectMemberId] = useState(null);
   const [rejectReason, setRejectReason] = useState("");
+  const [approvingGroupId, setApprovingGroupId] = useState(null);
+  const [umucoAccountNo, setUmucoAccountNo] = useState("");
   const [actionError, setActionError] = useState("");
 
   const pendingMembersCount = members.length;
   const pendingGroupsCount = groups.length;
+
+  async function loadWithdrawals() {
+    setWithdrawalsLoading(true);
+    try {
+      const fn = httpsCallable(functions, "getPendingWithdrawalRequests");
+      const res = await fn({});
+      setWithdrawals(Array.isArray(res.data?.requests) ? res.data.requests : []);
+    } catch {
+      setWithdrawals([]);
+    } finally {
+      setWithdrawalsLoading(false);
+    }
+  }
 
   async function loadPendingApprovals() {
     setLoading(true);
@@ -122,6 +139,7 @@ export default function ApprovalsScreen() {
 
   useEffect(() => {
     loadPendingApprovals();
+    loadWithdrawals();
   }, []);
 
   async function handleApproveMember(memberId) {
@@ -164,12 +182,19 @@ export default function ApprovalsScreen() {
   }
 
   async function handleApproveGroup(groupId) {
+    const accountNo = umucoAccountNo.trim();
+    if (!accountNo) {
+      setActionError("Umuco account number is required to approve a group.");
+      return;
+    }
     setActionError("");
     setWorkingGroupId(groupId);
     try {
       const approveGroup = httpsCallable(functions, "approveGroup");
-      await approveGroup({ groupId });
+      await approveGroup({ groupId, umucoAccountNo: accountNo });
       setGroups((prev) => prev.filter((g) => g.id !== groupId));
+      setApprovingGroupId(null);
+      setUmucoAccountNo("");
     } catch (err) {
       setActionError(getBackendErrorMessage(err, "Failed to approve group."));
     } finally {
@@ -198,7 +223,7 @@ export default function ApprovalsScreen() {
           </div>
           <button
             type="button"
-            onClick={loadPendingApprovals}
+            onClick={() => { loadPendingApprovals(); loadWithdrawals(); }}
             disabled={loading}
             className="rounded-md border border-slate-300 px-3 py-1.5 text-sm text-slate-700 bg-white hover:bg-slate-50 disabled:opacity-60"
           >
@@ -302,6 +327,7 @@ export default function ApprovalsScreen() {
           <div className="px-5 py-4 border-b border-slate-100">
             <h2 className="text-base font-semibold text-slate-900">Pending Groups</h2>
           </div>
+
           {loading ? (
             <div className="px-5 py-10 text-sm text-slate-400">Loading groups…</div>
           ) : groups.length === 0 ? (
@@ -310,8 +336,9 @@ export default function ApprovalsScreen() {
             <div className="divide-y divide-slate-100">
               {groups.map((group) => {
                 const isWorking = workingGroupId === group.id;
+                const isApproving = approvingGroupId === group.id;
                 return (
-                  <div key={group.id} className="px-5 py-4">
+                  <div key={group.id} className="px-5 py-4 space-y-3">
                     <div className="flex items-start justify-between gap-4">
                       <div>
                         <p className="text-sm font-semibold text-slate-900">{group.name || "Unnamed Group"}</p>
@@ -322,16 +349,92 @@ export default function ApprovalsScreen() {
                       </div>
                       <button
                         type="button"
-                        onClick={() => handleApproveGroup(group.id)}
+                        onClick={() => {
+                          setActionError("");
+                          setApprovingGroupId(group.id);
+                          setUmucoAccountNo("");
+                        }}
                         disabled={isWorking}
                         className="rounded-md bg-emerald-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-800 disabled:opacity-60"
                       >
-                        {isWorking ? "Approving…" : "Approve"}
+                        Approve
                       </button>
                     </div>
+                    {isApproving && (
+                      <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 space-y-2">
+                        <label className="block text-xs font-medium text-slate-600">
+                          Umuco account number
+                          <input
+                            type="text"
+                            value={umucoAccountNo}
+                            onChange={(e) => setUmucoAccountNo(e.target.value)}
+                            className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-slate-500 focus:outline-none"
+                            placeholder="e.g. UMUCO-0001234"
+                          />
+                        </label>
+                        <div className="flex justify-end gap-2">
+                          <button
+                            type="button"
+                            onClick={() => { setApprovingGroupId(null); setUmucoAccountNo(""); }}
+                            className="rounded-md border border-slate-300 px-3 py-1.5 text-xs text-slate-700 bg-white hover:bg-slate-50"
+                          >
+                            Cancel
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleApproveGroup(group.id)}
+                            disabled={isWorking}
+                            className="rounded-md bg-emerald-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-800 disabled:opacity-60"
+                          >
+                            {isWorking ? "Approving…" : "Confirm Approve"}
+                          </button>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 );
               })}
+            </div>
+          )}
+        </section>
+
+        <section className="rounded-xl border border-slate-200 bg-white shadow-sm">
+          <div className="px-5 py-4 border-b border-slate-100">
+            <h2 className="text-base font-semibold text-slate-900">Pending Large Withdrawals</h2>
+            <p className="text-xs text-slate-400 mt-0.5">Requests ≥ 50,000 BIF awaiting approval</p>
+          </div>
+          {withdrawalsLoading ? (
+            <div className="px-5 py-10 text-sm text-slate-400">Loading withdrawals…</div>
+          ) : withdrawals.length === 0 ? (
+            <div className="px-5 py-10 text-sm text-slate-500">No pending withdrawal requests.</div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-slate-200 bg-slate-50 text-left text-xs font-medium uppercase tracking-wide text-slate-500">
+                    <th className="px-5 py-3">Member</th>
+                    <th className="px-5 py-3">Group</th>
+                    <th className="px-5 py-3 text-right">Amount</th>
+                    <th className="px-5 py-3">Requested</th>
+                    <th className="px-5 py-3">Notes</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {withdrawals.map((req) => (
+                    <tr key={req.id}>
+                      <td className="px-5 py-3 font-medium text-slate-900">{req.memberName || req.userId || "—"}</td>
+                      <td className="px-5 py-3 text-slate-700">{req.groupName || req.groupId || "—"}</td>
+                      <td className="px-5 py-3 text-right font-medium text-slate-900">
+                        {Number(req.amount || 0).toLocaleString("en-US")} BIF
+                      </td>
+                      <td className="px-5 py-3 text-slate-500 whitespace-nowrap">
+                        {formatCreatedAt(req.createdAt)}
+                      </td>
+                      <td className="px-5 py-3 text-slate-500 max-w-xs truncate">{req.notes || "—"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
           )}
         </section>

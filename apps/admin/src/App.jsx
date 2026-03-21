@@ -14,6 +14,17 @@ import AgentReconciliationsScreen from "./features/Agents/AgentReconciliationsSc
 import ApprovalsScreen from "./features/Approvals/ApprovalsScreen";
 import LoansDashboardScreen from "./features/Loans/LoansDashboardScreen";
 import LoanDetailScreen from "./features/Loans/LoanDetailScreen";
+import ExecutiveDashboardScreen from "./features/SuperAdmin/ExecutiveDashboardScreen";
+import LoanPortfolioScreen from "./features/SuperAdmin/LoanPortfolioScreen";
+import AdminManagementScreen from "./features/SuperAdmin/AdminManagementScreen";
+import AuditLogScreen from "./features/SuperAdmin/AuditLogScreen";
+import SystemConfigScreen from "./features/SuperAdmin/SystemConfigScreen";
+import AllGroupsScreen from "./features/SuperAdmin/AllGroupsScreen";
+import GroupDetailScreen from "./features/SuperAdmin/GroupDetailScreen";
+import InstitutionManagementScreen from "./features/SuperAdmin/InstitutionManagementScreen";
+import RiskExceptionScreen from "./features/SuperAdmin/RiskExceptionScreen";
+import TransactionOversightScreen from "./features/SuperAdmin/TransactionOversightScreen";
+import KirimbaFundManagementScreen from "./features/SuperAdmin/KirimbaFundManagementScreen";
 
 const BASE_PATH = "/admin";
 const LOGIN_PATH = BASE_PATH + "/login";
@@ -146,6 +157,52 @@ export default function App() {
       <Route
         path={BASE_PATH + "/loans/:loanId"}
         element={<ProtectedRoute user={user} element={<LoanDetailScreen />} />}
+      />
+
+      {/* Super admin screens */}
+      <Route
+        path={BASE_PATH + "/super/executive"}
+        element={<ProtectedRoute user={user} element={<ExecutiveDashboardScreen />} />}
+      />
+      <Route
+        path={BASE_PATH + "/super/loans"}
+        element={<ProtectedRoute user={user} element={<LoanPortfolioScreen />} />}
+      />
+      <Route
+        path={BASE_PATH + "/super/admins"}
+        element={<ProtectedRoute user={user} element={<AdminManagementScreen />} />}
+      />
+      <Route
+        path={BASE_PATH + "/super/audit"}
+        element={<ProtectedRoute user={user} element={<AuditLogScreen />} />}
+      />
+      <Route
+        path={BASE_PATH + "/super/config"}
+        element={<ProtectedRoute user={user} element={<SystemConfigScreen />} />}
+      />
+      <Route
+        path={BASE_PATH + "/super/groups"}
+        element={<ProtectedRoute user={user} element={<AllGroupsScreen />} />}
+      />
+      <Route
+        path={BASE_PATH + "/super/groups/:groupId"}
+        element={<ProtectedRoute user={user} element={<GroupDetailScreen />} />}
+      />
+      <Route
+        path={BASE_PATH + "/super/institutions"}
+        element={<ProtectedRoute user={user} element={<InstitutionManagementScreen />} />}
+      />
+      <Route
+        path={BASE_PATH + "/super/exceptions"}
+        element={<ProtectedRoute user={user} element={<RiskExceptionScreen />} />}
+      />
+      <Route
+        path={BASE_PATH + "/super/transactions"}
+        element={<ProtectedRoute user={user} element={<TransactionOversightScreen />} />}
+      />
+      <Route
+        path={BASE_PATH + "/super/fund"}
+        element={<ProtectedRoute user={user} element={<KirimbaFundManagementScreen />} />}
       />
 
       {/* Legacy /home redirect */}
