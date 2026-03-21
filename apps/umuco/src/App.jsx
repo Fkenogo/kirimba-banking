@@ -7,6 +7,7 @@ import LoginPage from "./pages/LoginPage";
 import PendingBatchesScreen from "./features/Batches/PendingBatchesScreen";
 import BatchDetailScreen from "./features/Batches/BatchDetailScreen";
 import BatchHistoryScreen from "./features/Batches/BatchHistoryScreen";
+import FlaggedBatchesScreen from "./features/Batches/FlaggedBatchesScreen";
 
 const BASE_PATH = "/umuco";
 const LOGIN_PATH = BASE_PATH + "/login";
@@ -19,6 +20,7 @@ function ProtectedRoute({ user, element }) {
 export default function App() {
   const [user, setUser] = useState(null);
   const [role, setRole] = useState(null);
+  const [institutionId, setInstitutionId] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
@@ -26,6 +28,7 @@ export default function App() {
       setUser(nextUser);
       if (!nextUser) {
         setRole(null);
+        setInstitutionId(null);
         setIsLoading(false);
         return;
       }
@@ -33,8 +36,10 @@ export default function App() {
       try {
         const token = await nextUser.getIdTokenResult();
         setRole(token.claims?.role || null);
+        setInstitutionId(token.claims?.institutionId || null);
       } catch {
         setRole(null);
+        setInstitutionId(null);
       } finally {
         setIsLoading(false);
       }
@@ -51,7 +56,7 @@ export default function App() {
     );
   }
 
-  if (user && role !== "umuco") {
+  if (user && role !== "institution_user") {
     return (
       <main className="min-h-screen flex items-center justify-center p-6 bg-slate-50">
         <section className="w-full max-w-md rounded-xl border border-slate-200 bg-white p-6 shadow-sm text-center">
@@ -76,11 +81,11 @@ export default function App() {
       <Route path={LOGIN_PATH} element={user ? <Navigate to={HOME_PATH} replace /> : <LoginPage />} />
       <Route
         path={HOME_PATH}
-        element={<ProtectedRoute user={user} element={<HomePage user={user} />} />}
+        element={<ProtectedRoute user={user} element={<HomePage user={user} institutionId={institutionId} />} />}
       />
       <Route
         path={BASE_PATH + "/batches"}
-        element={<ProtectedRoute user={user} element={<PendingBatchesScreen />} />}
+        element={<ProtectedRoute user={user} element={<PendingBatchesScreen institutionId={institutionId} />} />}
       />
       <Route
         path={BASE_PATH + "/batch/:batchId"}
@@ -88,7 +93,11 @@ export default function App() {
       />
       <Route
         path={BASE_PATH + "/history"}
-        element={<ProtectedRoute user={user} element={<BatchHistoryScreen />} />}
+        element={<ProtectedRoute user={user} element={<BatchHistoryScreen institutionId={institutionId} />} />}
+      />
+      <Route
+        path={BASE_PATH + "/exceptions"}
+        element={<ProtectedRoute user={user} element={<FlaggedBatchesScreen institutionId={institutionId} />} />}
       />
       <Route path={BASE_PATH} element={<Navigate to={LOGIN_PATH} replace />} />
       <Route path="*" element={<Navigate to={LOGIN_PATH} replace />} />
