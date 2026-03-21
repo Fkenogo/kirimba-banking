@@ -9,6 +9,10 @@ import ScanDepositScreen from "./features/Deposits/ScanDepositScreen";
 import AgentDailySummaryScreen from "./features/Deposits/AgentDailySummaryScreen";
 import AgentBusinessDashboardScreen from "./features/Dashboard/AgentBusinessDashboardScreen";
 import CloseDayScreen from "./features/Reconciliation/CloseDayScreen";
+import LoanDisbursementScreen from "./features/Loans/LoanDisbursementScreen";
+import LoanRepaymentScreen from "./features/Loans/LoanRepaymentScreen";
+import AgentWithdrawalScreen from "./features/Withdrawals/AgentWithdrawalScreen";
+import SettlementScreen from "./features/Settlements/SettlementScreen";
 
 const BASE_PATH = "/agent";
 const LOGIN_PATH = BASE_PATH + "/login";
@@ -102,6 +106,22 @@ export default function App() {
       <Route
         path={CLOSE_DAY_PATH}
         element={user ? <CloseDayScreen user={user} /> : <Navigate to={LOGIN_PATH} replace />}
+      />
+      <Route
+        path={BASE_PATH + "/loans/disburse"}
+        element={user ? <LoanDisbursementScreen user={user} /> : <Navigate to={LOGIN_PATH} replace />}
+      />
+      <Route
+        path={BASE_PATH + "/loans/repay"}
+        element={user ? <LoanRepaymentScreen user={user} /> : <Navigate to={LOGIN_PATH} replace />}
+      />
+      <Route
+        path={BASE_PATH + "/withdrawals"}
+        element={user ? <AgentWithdrawalScreen user={user} /> : <Navigate to={LOGIN_PATH} replace />}
+      />
+      <Route
+        path={BASE_PATH + "/settlements"}
+        element={user ? <SettlementScreen user={user} /> : <Navigate to={LOGIN_PATH} replace />}
       />
       <Route path={BASE_PATH} element={<Navigate to={LOGIN_PATH} replace />} />
       <Route path="*" element={<Navigate to={LOGIN_PATH} replace />} />

@@ -27,32 +27,83 @@ export default function HomePage({ user }) {
           <p className="mt-1 text-xs text-slate-400 truncate">{user.email || user.uid}</p>
         </header>
 
-        <section className="space-y-3">
-          <ActionCard
-            title="Scan Deposit"
-            subtitle="Record a member deposit in the field"
-            tone="emerald"
-            onClick={() => navigate("/agent/scan-deposit")}
-          />
-          <ActionCard
-            title="Today&apos;s Deposits"
-            subtitle="Review synced and pending deposit entries"
-            tone="blue"
-            onClick={() => navigate("/agent/deposits-today")}
-          />
-          <ActionCard
-            title="Business Dashboard"
-            subtitle="Track totals, commissions, and daily performance"
-            tone="indigo"
-            onClick={() => navigate("/agent/dashboard")}
-          />
-          <ActionCard
-            title="Close Day"
-            subtitle="Submit reconciliation and cash summary"
-            tone="amber"
-            onClick={() => navigate("/agent/close-day")}
-          />
-        </section>
+        <div className="space-y-5">
+          {/* Deposits */}
+          <div>
+            <SectionLabel label="Deposits" />
+            <div className="space-y-3">
+              <ActionCard
+                title="Scan Deposit"
+                subtitle="Record a member deposit in the field"
+                tone="emerald"
+                onClick={() => navigate("/agent/scan-deposit")}
+              />
+              <ActionCard
+                title="Today's Deposits"
+                subtitle="Review synced and pending deposit entries"
+                tone="blue"
+                onClick={() => navigate("/agent/deposits-today")}
+              />
+            </div>
+          </div>
+
+          {/* Loans */}
+          <div>
+            <SectionLabel label="Loans" />
+            <div className="space-y-3">
+              <ActionCard
+                title="Disburse Loan"
+                subtitle="Pay out an approved loan to a member"
+                tone="indigo"
+                onClick={() => navigate("/agent/loans/disburse")}
+              />
+              <ActionCard
+                title="Record Repayment"
+                subtitle="Record a member loan repayment"
+                tone="teal"
+                onClick={() => navigate("/agent/loans/repay")}
+              />
+            </div>
+          </div>
+
+          {/* Withdrawals */}
+          <div>
+            <SectionLabel label="Withdrawals" />
+            <div className="space-y-3">
+              <ActionCard
+                title="Process Withdrawal"
+                subtitle="Disburse cash withdrawal to a member"
+                tone="amber"
+                onClick={() => navigate("/agent/withdrawals")}
+              />
+            </div>
+          </div>
+
+          {/* Business & Settlement */}
+          <div>
+            <SectionLabel label="Business" />
+            <div className="space-y-3">
+              <ActionCard
+                title="Business Dashboard"
+                subtitle="Track totals, commissions, and daily performance"
+                tone="slate"
+                onClick={() => navigate("/agent/dashboard")}
+              />
+              <ActionCard
+                title="Close Day"
+                subtitle="Submit reconciliation and cash summary"
+                tone="amber"
+                onClick={() => navigate("/agent/close-day")}
+              />
+              <ActionCard
+                title="Settlements"
+                subtitle="Request and track settlement payments"
+                tone="slate"
+                onClick={() => navigate("/agent/settlements")}
+              />
+            </div>
+          </div>
+        </div>
 
         {error ? <p className="mt-4 text-sm text-red-600">{error}</p> : null}
 
@@ -69,12 +120,20 @@ export default function HomePage({ user }) {
   );
 }
 
+function SectionLabel({ label }) {
+  return (
+    <p className="text-xs font-semibold uppercase tracking-wide text-slate-400 mb-2 px-1">{label}</p>
+  );
+}
+
 function ActionCard({ title, subtitle, onClick, tone }) {
   const toneClasses = {
     emerald: "border-emerald-200 bg-emerald-50",
     blue: "border-blue-200 bg-blue-50",
     indigo: "border-indigo-200 bg-indigo-50",
+    teal: "border-teal-200 bg-teal-50",
     amber: "border-amber-200 bg-amber-50",
+    slate: "border-slate-200 bg-white",
   };
 
   return (

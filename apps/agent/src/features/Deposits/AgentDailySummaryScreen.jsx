@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { collection, getDocs, query, Timestamp, where } from "firebase/firestore";
-import { db } from "../../services/firebase";
+import { httpsCallable } from "firebase/functions";
+import { db, functions } from "../../services/firebase";
 import { getOfflineDeposits } from "../../services/offlineDeposits";
 import { onPendingCountChange, getPendingCount } from "../../services/depositSyncService";
 
@@ -12,7 +13,7 @@ function startOfToday() {
 
 function formatTime(ts) {
   if (!ts) return "—";
-  const date = ts.toDate ? ts.toDate() : new Date(ts);
+  const date = ts._seconds ? new Date(ts._seconds * 1000) : ts.toDate ? ts.toDate() : new Date(ts);
   return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
@@ -23,42 +24,75 @@ function formatAmount(n) {
 export default function AgentDailySummaryScreen({ user }) {
   const [deposits, setDeposits] = useState([]);
   const [offlineDeposits, setOfflineDeposits] = useState([]);
+  const [batches, setBatches] = useState([]);
   const [pendingCount, setPendingCount] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [submittingGroup, setSubmittingGroup] = useState(null); // groupId being submitted
+  const [submitError, setSubmitError] = useState(null);
+  const [submitSuccess, setSubmitSuccess] = useState(null); // { groupId, batchId }
 
-  // Load Firestore deposits for today
-  useEffect(() => {
+  async function loadDeposits() {
     if (!user?.uid) return;
+    setLoading(true);
+    setError(null);
+    try {
+      const todayStart = startOfToday();
 
-    async function load() {
-      setLoading(true);
-      setError(null);
-      try {
-        const q = query(
+      // Composite index required: agentId ASC + type ASC + createdAt ASC
+      const [txSnap, batchSnap] = await Promise.all([
+        getDocs(query(
           collection(db, "transactions"),
           where("agentId", "==", user.uid),
           where("type", "==", "deposit"),
-          where("createdAt", ">=", startOfToday())
-        );
-        const snap = await getDocs(q);
-        const rows = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-        // Sort newest first client-side (avoids requiring a composite index)
-        rows.sort((a, b) => {
-          const aMs = a.createdAt?.toMillis?.() ?? 0;
-          const bMs = b.createdAt?.toMillis?.() ?? 0;
-          return bMs - aMs;
-        });
-        setDeposits(rows);
-      } catch (err) {
-        setError(err.message || "Failed to load deposits.");
-      } finally {
-        setLoading(false);
-      }
-    }
+          where("createdAt", ">=", todayStart)
+        )),
+        // Single-field query — no composite index required
+        getDocs(query(
+          collection(db, "depositBatches"),
+          where("agentId", "==", user.uid)
+        )),
+      ]);
 
-    load();
-  }, [user?.uid]);
+      const rows = txSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      rows.sort((a, b) => (b.createdAt?.toMillis?.() ?? 0) - (a.createdAt?.toMillis?.() ?? 0));
+      setDeposits(rows);
+
+      // Filter batches to today client-side (avoids composite index)
+      const todayMs = todayStart.toMillis();
+      const todayBatches = batchSnap.docs
+        .map((d) => ({ id: d.id, ...d.data() }))
+        .filter((b) => (b.submittedAt?.toMillis?.() ?? 0) >= todayMs);
+      todayBatches.sort((a, b) => (b.submittedAt?.toMillis?.() ?? 0) - (a.submittedAt?.toMillis?.() ?? 0));
+      setBatches(todayBatches);
+    } catch (err) {
+      setError(err.message || "Failed to load deposits.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleSubmitBatch(groupId, txIds) {
+    setSubmittingGroup(groupId);
+    setSubmitError(null);
+    setSubmitSuccess(null);
+    try {
+      const submitBatch = httpsCallable(functions, "submitBatch");
+      const token = `${groupId}_${user.uid}_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+      const result = await submitBatch({ groupId, transactionIds: txIds, idempotencyToken: token });
+      setSubmitSuccess({ groupId, batchId: result.data.batchId });
+      await loadDeposits();
+    } catch (err) {
+      setSubmitError(err.message || "Failed to submit batch.");
+    } finally {
+      setSubmittingGroup(null);
+    }
+  }
+
+  // Load Firestore deposits for today
+  useEffect(() => {
+    loadDeposits();
+  }, [user?.uid]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Load offline (unsynced) deposits for this agent
   useEffect(() => {
@@ -84,6 +118,18 @@ export default function AgentDailySummaryScreen({ user }) {
   const offlineTotal = offlineDeposits.reduce((sum, d) => sum + Number(d.amount || 0), 0);
   const grandTotal = onlineTotal + offlineTotal;
 
+  // Deposits recorded today that haven't been batched yet, grouped by groupId
+  const unbatchedByGroup = deposits
+    .filter((d) => !d.batchId && d.status === "pending_confirmation")
+    .reduce((acc, d) => {
+      if (d.groupId) {
+        if (!acc[d.groupId]) acc[d.groupId] = [];
+        acc[d.groupId].push(d);
+      }
+      return acc;
+    }, {});
+  const groupsWithUnbatched = Object.keys(unbatchedByGroup);
+
   return (
     <main className="min-h-screen bg-slate-50 flex flex-col">
       <header className="bg-white border-b border-slate-200 px-4 py-3">
@@ -105,11 +151,119 @@ export default function AgentDailySummaryScreen({ user }) {
 
       <div className="flex-1 max-w-md mx-auto w-full px-4 pt-4 pb-32 space-y-4">
 
-        {/* Error */}
+        {/* Errors */}
         {error && (
           <div className="bg-red-50 border border-red-200 rounded-xl px-4 py-3">
             <p className="text-sm text-red-600">{error}</p>
           </div>
+        )}
+        {submitError && (
+          <div className="bg-red-50 border border-red-200 rounded-xl px-4 py-3 flex items-start justify-between gap-2">
+            <p className="text-sm text-red-600">{submitError}</p>
+            <button onClick={() => setSubmitError(null)} className="text-red-400 hover:text-red-600 text-lg leading-none shrink-0">×</button>
+          </div>
+        )}
+        {submitSuccess && (
+          <div className="bg-emerald-50 border border-emerald-200 rounded-xl px-4 py-3 flex items-start justify-between gap-2">
+            <p className="text-sm text-emerald-700">Batch submitted to institution. Batch ID: <span className="font-mono text-xs">{submitSuccess.batchId}</span></p>
+            <button onClick={() => setSubmitSuccess(null)} className="text-emerald-400 hover:text-emerald-600 text-lg leading-none shrink-0">×</button>
+          </div>
+        )}
+
+        {/* Flagged Batches — prominent alert */}
+        {!loading && batches.filter((b) => b.status === "flagged").length > 0 && (
+          <section className="space-y-2">
+            <p className="text-xs font-semibold text-red-600 uppercase tracking-wider px-1">
+              Flagged Batches — Action Required
+            </p>
+            {batches.filter((b) => b.status === "flagged").map((batch) => (
+              <div key={batch.id} className="bg-red-50 border border-red-300 rounded-xl px-4 py-3 space-y-1">
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-sm font-semibold text-red-800">Batch Flagged by Institution</p>
+                  <span className="text-xs font-mono text-red-400">{batch.id.slice(0, 8)}…</span>
+                </div>
+                <p className="text-xs text-red-600">
+                  {formatAmount(batch.totalAmount)} BIF · {batch.memberCount} member{batch.memberCount !== 1 ? "s" : ""}
+                </p>
+                {(batch.institutionNotes || batch.umucoNotes) && (
+                  <p className="text-sm text-red-700 bg-white border border-red-200 rounded-lg px-3 py-2 mt-1">
+                    <span className="font-medium">Note: </span>{batch.institutionNotes || batch.umucoNotes}
+                  </p>
+                )}
+              </div>
+            ))}
+          </section>
+        )}
+
+        {/* Submitted Batches — awaiting confirmation */}
+        {!loading && batches.filter((b) => b.status === "submitted").length > 0 && (
+          <section className="space-y-2">
+            <p className="text-xs font-semibold text-blue-600 uppercase tracking-wider px-1">
+              Submitted — Awaiting Institution
+            </p>
+            {batches.filter((b) => b.status === "submitted").map((batch) => (
+              <div key={batch.id} className="bg-blue-50 border border-blue-200 rounded-xl px-4 py-3 flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-sm font-medium text-blue-900">
+                    {formatAmount(batch.totalAmount)} BIF · {batch.memberCount} member{batch.memberCount !== 1 ? "s" : ""}
+                  </p>
+                  <p className="text-xs font-mono text-blue-400 mt-0.5">{batch.id.slice(0, 12)}…</p>
+                </div>
+                <span className="text-xs font-semibold bg-blue-100 text-blue-700 px-2 py-1 rounded-full">Pending</span>
+              </div>
+            ))}
+          </section>
+        )}
+
+        {/* Confirmed Batches */}
+        {!loading && batches.filter((b) => b.status === "confirmed").length > 0 && (
+          <section className="space-y-2">
+            <p className="text-xs font-semibold text-emerald-600 uppercase tracking-wider px-1">
+              Confirmed Today
+            </p>
+            {batches.filter((b) => b.status === "confirmed").map((batch) => (
+              <div key={batch.id} className="bg-emerald-50 border border-emerald-200 rounded-xl px-4 py-3 flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-sm font-medium text-emerald-900">
+                    {formatAmount(batch.totalAmount)} BIF · {batch.memberCount} member{batch.memberCount !== 1 ? "s" : ""}
+                  </p>
+                  <p className="text-xs font-mono text-emerald-400 mt-0.5">{batch.id.slice(0, 12)}…</p>
+                </div>
+                <span className="text-xs font-semibold bg-emerald-100 text-emerald-700 px-2 py-1 rounded-full">Confirmed</span>
+              </div>
+            ))}
+          </section>
+        )}
+
+        {/* Submit to institution — shown when there are unbatched pending deposits */}
+        {!loading && groupsWithUnbatched.length > 0 && (
+          <section className="space-y-2">
+            <p className="text-xs font-semibold text-violet-600 uppercase tracking-wider px-1">
+              Ready to Submit
+            </p>
+            {groupsWithUnbatched.map((groupId) => {
+              const txs = unbatchedByGroup[groupId];
+              const total = txs.reduce((s, d) => s + Number(d.amount || 0), 0);
+              const isSubmitting = submittingGroup === groupId;
+              return (
+                <div key={groupId} className="bg-violet-50 border border-violet-200 rounded-xl px-4 py-3 flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium text-violet-900">{txs.length} deposit{txs.length !== 1 ? "s" : ""}</p>
+                    <p className="text-xs text-violet-600 font-mono truncate">{groupId}</p>
+                    <p className="text-xs text-violet-700 mt-0.5">{formatAmount(total)} BIF pending</p>
+                  </div>
+                  <button
+                    type="button"
+                    disabled={isSubmitting || !!submittingGroup}
+                    onClick={() => handleSubmitBatch(groupId, txs.map((t) => t.id))}
+                    className="shrink-0 bg-violet-700 hover:bg-violet-800 disabled:opacity-50 text-white text-xs font-semibold px-3 py-2 rounded-lg transition-colors"
+                  >
+                    {isSubmitting ? "Submitting…" : "Submit Batch"}
+                  </button>
+                </div>
+              );
+            })}
+          </section>
         )}
 
         {/* Loading */}
