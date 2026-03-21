@@ -31,6 +31,21 @@ npm run emulators:core
 firebase deploy
 ```
 
+## Local App Routes
+
+Use `npm run dev:all` for live development or `npm run build:all && npm run preview:all` for production bundle preview.
+
+- Member app: `http://127.0.0.1:5173/app/login` in dev, `http://127.0.0.1:4173/app/login` in preview
+- Agent app: `http://127.0.0.1:5174/agent/login` in dev, `http://127.0.0.1:4174/agent/login` in preview
+- Admin app: `http://127.0.0.1:5175/admin/login` in dev, `http://127.0.0.1:4175/admin/login` in preview
+- Umuco app: `http://127.0.0.1:5176/umuco/login` in dev, `http://127.0.0.1:4176/umuco/login` in preview
+
+## Firebase Hosting Targets
+
+- `firebase.json` expects hosting targets for `app`, `agent`, `admin`, and `umuco`.
+- `.firebaserc` currently defines only `app` and `admin`.
+- Add the real Firebase Hosting site IDs for `agent` and `umuco` before using Firebase Hosting preview channels or multi-site deploys.
+
 ## Notes
 
 - Cloud Functions currently include member onboarding, group management, savings/deposit-batch flows, loan lifecycle callables, and health checks.

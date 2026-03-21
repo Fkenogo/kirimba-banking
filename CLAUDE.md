@@ -1,6 +1,6 @@
 # CLAUDE.md - AI Assistant Guide for KIRIMBA Banking Platform
 
-> **Last Updated**: 2026-03-02
+> **Last Updated**: 2026-03-14
 > **Purpose**: Comprehensive guide for AI assistants working on the KIRIMBA codebase
 
 ---
@@ -8,17 +8,18 @@
 ## Table of Contents
 
 1. [Project Overview](#project-overview)
-2. [Quick Start](#quick-start)
-3. [Repository Structure](#repository-structure)
-4. [Technology Stack](#technology-stack)
-5. [Architecture & Design Patterns](#architecture--design-patterns)
-6. [Database Schema](#database-schema)
-7. [Backend API Reference](#backend-api-reference)
-8. [Frontend Applications](#frontend-applications)
-9. [Development Workflows](#development-workflows)
-10. [Critical Patterns & Conventions](#critical-patterns--conventions)
-11. [Common Tasks](#common-tasks)
-12. [Troubleshooting](#troubleshooting)
+2. [Recent Updates (v3.1.9)](#recent-updates-v319)
+3. [Quick Start](#quick-start)
+4. [Repository Structure](#repository-structure)
+5. [Technology Stack](#technology-stack)
+6. [Architecture & Design Patterns](#architecture--design-patterns)
+7. [Database Schema](#database-schema)
+8. [Backend API Reference](#backend-api-reference)
+9. [Frontend Applications](#frontend-applications)
+10. [Development Workflows](#development-workflows)
+11. [Critical Patterns & Conventions](#critical-patterns--conventions)
+12. [Common Tasks](#common-tasks)
+13. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -48,6 +49,89 @@
 - [KIRIMBA_Firebase_Setup_Guide.md](KIRIMBA_Firebase_Setup_Guide.md) - Firebase configuration instructions
 - [KIRIMBA_Build_Alignment.md](KIRIMBA_Build_Alignment.md) - Build checklist and status tracking
 - [README.md](README.md) - Quick setup guide
+
+---
+
+## Recent Updates (v3.1.9)
+
+**Release Date**: March 2026
+
+### Major Features Added
+
+1. **Super Admin Module** (`functions/src/superAdmin.js`)
+   - System configuration management (fees, loan policy, commission policy, business rules)
+   - User and group suspension workflows
+   - Admin user management
+   - Institution (partner) management
+   - Executive dashboard and business intelligence
+   - Comprehensive audit logging
+
+2. **Agent Provisioning & Management** (`functions/src/agents.js`)
+   - Streamlined agent onboarding workflow
+   - Agent-to-group assignment system
+   - Admin and institution user provisioning
+   - Agent schema updated with `assignedGroups` array model
+
+3. **Agent Reconciliation & Settlements** (`functions/src/reconciliation.js`)
+   - Daily agent reconciliation closure
+   - Commission tracking and settlement requests
+   - Multi-step approval workflow for payouts
+
+4. **Enhanced Group Management** (`functions/src/groups.js`)
+   - Borrow pause capability (freeze loan requests per group)
+   - Group split functionality for large groups
+   - Leader membership backfill utility
+
+5. **Extended Member, Savings, and Loan Functions**
+   - Member-initiated withdrawal requests
+   - Bulk deposit approval workflows
+   - Enhanced loan dashboard and admin controls
+   - Agent ledger queries for commission tracking
+
+6. **Frontend Enhancements**
+   - Super Admin dashboard screens (9 new screens in `/apps/admin/src/features/SuperAdmin/`)
+   - Agent loan management UI
+   - Agent settlement screens
+   - Member loan viewing and agent finder
+   - Umuco flagged batches screen
+
+### New Collections
+
+- **auditLog**: Comprehensive audit trail for all admin actions
+- **institutions**: Partner institution registry
+- **systemConfig**: Platform-wide configuration (4 documents)
+- **agentSettlements**: Agent payout tracking
+- **agentReconciliations**: Daily agent cash reconciliation
+
+### New Constants
+
+```javascript
+// Added in v3.1.9
+SETTLEMENT_STATUS: { REQUESTED, APPROVED, PAID, REJECTED }
+LEDGER_TYPE: { FEE, COMMISSION }
+LEDGER_STATUS: { ACCRUED, SETTLED, REVERSED }
+```
+
+### Security Enhancements
+
+- Bcrypt PIN hashing (replacing SHA256)
+- Idempotency tokens required for `submitBatch`
+- Enhanced Firestore security rules
+- Notification TTL and automatic cleanup
+
+### Breaking Changes
+
+- `submitBatch` now requires `idempotencyToken` parameter
+- `agents` schema changed from single `assignedGroupId` to `assignedGroups[]` array
+- New `admin` role distinct from `super_admin`
+
+### Migration Notes
+
+If upgrading from pre-v3.1.9:
+1. Run `seedSystemConfig()` to initialize system configuration
+2. Update agent documents to use `assignedGroups` array
+3. Backfill leader group memberships using `backfillLeaderGroupMembership()`
+4. Review and update Firestore indexes (10 new indexes added)
 
 ---
 
@@ -97,11 +181,16 @@ kirimba-banking/
 │
 ├── functions/                          # Firebase Cloud Functions (Node.js 20)
 │   └── src/
-│       ├── index.js                    # Function exports (18 callables + 1 trigger)
+│       ├── index.js                    # Function exports (50+ callables + 2 triggers)
 │       ├── constants.js                # Enums (roles, statuses, transaction types)
-│       ├── members.js                  # Member & group management (517 lines)
-│       ├── savings.js                  # Savings & deposits (597 lines)
-│       ├── loans.js                    # Loan lifecycle (578 lines)
+│       ├── members.js                  # Member & group management
+│       ├── savings.js                  # Savings & deposits
+│       ├── loans.js                    # Loan lifecycle
+│       ├── agents.js                   # Agent provisioning & assignment
+│       ├── groups.js                   # Group management utilities
+│       ├── reconciliation.js           # Agent settlement & reconciliation
+│       ├── superAdmin.js               # Business oversight & system config
+│       ├── scheduledFunctions.js       # Scheduled cleanup tasks
 │       ├── utils.js                    # PIN hashing, calculations, receipts
 │       └── validators.js               # Input validation helpers
 │
@@ -189,9 +278,10 @@ Password: 4-digit PIN (presented as full password)
 4. Frontend checks `user.uid` + custom claims for authorization
 
 **Role-Based Access**:
-- **Roles**: `super_admin`, `finance`, `agent`, `leader`, `member`, `umuco`
+- **Roles**: `super_admin`, `admin`, `finance`, `agent`, `leader`, `member`, `umuco`
 - **Custom Claims**: Injected at approval time, read from `request.auth.token.role`
 - **Firestore Rules**: Enforce role-based read access (all writes denied)
+- **Note**: `admin` role added in v3.1.9 (distinct from `super_admin`)
 
 ### 3. Transaction Safety
 
@@ -386,10 +476,89 @@ All apps:
 }
 ```
 
+### New Collections (v3.1.9+)
+
+#### auditLog
+```typescript
+{
+  actorId: string,                    // FK → users/{uid}
+  actorRole: string,                  // Role at time of action
+  action: string,                     // e.g., "user_suspended", "config_updated"
+  targetType: string,                 // "user" | "group" | "systemConfig" | "institution"
+  targetId: string | null,            // FK to target document
+  meta: object,                       // Action-specific metadata
+  createdAt: Timestamp
+}
+```
+
+#### institutions
+```typescript
+{
+  name: string,                       // Institution name
+  code: string,                       // Unique code (e.g., "UMUCO")
+  status: "active" | "suspended",
+  contactEmail: string | null,
+  notes: string | null,
+  createdAt: Timestamp,
+  createdBy: string,                  // FK → users/{uid}
+  suspendedAt: Timestamp | null,
+  suspendedBy: string | null,
+  suspendReason: string | null
+}
+```
+
+#### systemConfig
+Documents: `fees`, `loanPolicy`, `commissionPolicy`, `businessRules`
+
+```typescript
+// systemConfig/fees
+{
+  depositFeeFlat: number,
+  withdrawFeeFlat: number,
+  agentCommissionRate: number,
+  updatedAt: Timestamp,
+  updatedBy: string
+}
+
+// systemConfig/loanPolicy
+{
+  maxLoanMultiplier: number,          // 1.5
+  minLoanAmount: number,
+  maxLoanAmount: number,
+  defaultTermDays: number,
+  interestRates: { 7: 0.06, 14: 0.05, 30: 0.04 }
+}
+
+// systemConfig/commissionPolicy
+{
+  agentDepositCommissionRate: number,
+  agentLoanCommissionRate: number,
+  settlementCycleDays: number
+}
+
+// systemConfig/businessRules
+{
+  minBalanceBIF: number,
+  largeWithdrawalThresholdBIF: number,
+  maxGroupSize: number,
+  groupSplitThreshold: number
+}
+```
+
+#### agents (schema update)
+```typescript
+{
+  // ... existing user fields
+  assignedGroups: string[],           // Array of group IDs
+  institutionId: string | null,       // FK → institutions/{id}
+}
+```
+
 ### Firestore Indexes
 
-8 composite indexes for efficient queries:
+18+ composite indexes for efficient queries (key additions in v3.1.9):
 
+**Original indexes (1-8)**:
 1. `transactions`: `groupId ASC + createdAt DESC`
 2. `loans`: `userId ASC + status ASC + createdAt DESC`
 3. `depositBatches`: `groupId ASC + status ASC + submittedAt DESC`
@@ -398,6 +567,18 @@ All apps:
 6. `loans`: `userId ASC + createdAt DESC`
 7. `loans`: `groupId ASC + createdAt DESC`
 8. `loans`: `groupId ASC + status ASC + createdAt DESC`
+
+**New indexes (v3.1.9+)**:
+9. `transactions`: `agentId ASC + type ASC + createdAt ASC`
+10. `transactions`: `userId ASC + createdAt DESC`
+11. `transactions`: `type ASC + status ASC + createdAt DESC`
+12. `users`: `role ASC + createdAt DESC`
+13. `auditLog`: `actorId ASC + createdAt DESC`
+14. `auditLog`: `targetType ASC + createdAt DESC`
+15. `loans`: `status ASC + createdAt DESC`
+16. `groups`: `status ASC + createdAt DESC`
+17. `depositBatches`: `status ASC + submittedAt DESC`
+18. `depositBatches`: `status ASC + flaggedAt DESC`
 
 **Add new indexes** to [firestore.indexes.json](firestore.indexes.json) when Firestore query errors request them.
 
@@ -733,6 +914,281 @@ All apps:
 
 ---
 
+### Super Admin Functions (15 Functions) - NEW in v3.1.9
+
+#### System Configuration
+
+##### `getSystemConfig(configId)`
+**Callable by**: `super_admin`, `admin`, `finance`
+**Purpose**: Retrieve system configuration document
+**Input**: `{ configId: "fees" | "loanPolicy" | "commissionPolicy" | "businessRules" }`
+**Returns**: `{ configId, data: {...} | null }`
+
+##### `updateSystemConfig(configId, data)`
+**Callable by**: `super_admin`
+**Purpose**: Update system configuration
+**Input**: `{ configId: string, data: object }`
+**Returns**: `{ success: true }`
+**Side Effects**: Writes audit log entry
+
+##### `seedSystemConfig()`
+**Callable by**: `super_admin`
+**Purpose**: Initialize system config with default values
+**Returns**: `{ seeded: string[] }`
+
+#### User & Group Suspension
+
+##### `suspendUser(userId, reason)`
+**Callable by**: `super_admin`
+**Purpose**: Suspend any user (except super_admin)
+**Input**: `{ userId: string, reason: string }`
+**Returns**: `{ success: true }`
+**Side Effects**: Sets user status to `suspended`, writes audit log
+
+##### `reactivateUser(userId)`
+**Callable by**: `super_admin`
+**Purpose**: Reactivate suspended user
+**Input**: `{ userId: string }`
+**Returns**: `{ success: true }`
+
+##### `suspendGroup(groupId, reason)`
+**Callable by**: `super_admin`
+**Purpose**: Suspend a group
+**Input**: `{ groupId: string, reason: string }`
+**Returns**: `{ success: true }`
+
+##### `reactivateGroup(groupId)`
+**Callable by**: `super_admin`
+**Purpose**: Reactivate suspended group
+**Input**: `{ groupId: string }`
+**Returns**: `{ success: true }`
+
+#### Admin Management
+
+##### `getAdmins()`
+**Callable by**: `super_admin`
+**Purpose**: List all admin users (super_admin, admin, finance)
+**Returns**: `{ admins: Array<{uid, fullName, phone, role, status, ...}> }`
+
+##### `suspendAdmin(userId, reason)`
+**Callable by**: `super_admin`
+**Purpose**: Suspend admin user (cannot suspend self or other super_admins)
+**Input**: `{ userId: string, reason: string }`
+**Returns**: `{ success: true }`
+
+##### `reactivateAdmin(userId)`
+**Callable by**: `super_admin`
+**Purpose**: Reactivate suspended admin
+**Input**: `{ userId: string }`
+**Returns**: `{ success: true }`
+
+#### Institution Management
+
+##### `getInstitutions()`
+**Callable by**: `super_admin`, `admin`, `finance`
+**Purpose**: List all partner institutions
+**Returns**: `{ institutions: Array<{id, name, code, status, ...}> }`
+
+##### `createInstitution(name, code, contactEmail?, notes?)`
+**Callable by**: `super_admin`
+**Purpose**: Register new partner institution
+**Input**: `{ name: string, code: string, contactEmail?: string, notes?: string }`
+**Returns**: `{ institutionId: string }`
+**Validation**: Code must be unique, 2-20 chars
+
+##### `suspendInstitution(institutionId, reason)`
+**Callable by**: `super_admin`
+**Purpose**: Suspend institution
+**Input**: `{ institutionId: string, reason: string }`
+**Returns**: `{ success: true }`
+
+##### `reactivateInstitution(institutionId)`
+**Callable by**: `super_admin`
+**Purpose**: Reactivate institution
+**Input**: `{ institutionId: string }`
+**Returns**: `{ success: true }`
+
+#### Business Intelligence Dashboards
+
+##### `getExecutiveSummary()`
+**Callable by**: `super_admin`
+**Purpose**: High-level platform metrics
+**Returns**:
+```typescript
+{
+  summary: {
+    activeMemberCount: number,
+    activeGroupCount: number,
+    pendingApprovals: number,
+    fund: { totalCollateral, availableFund, deployedFund },
+    activeLoansCount: number,
+    defaultedLoansCount: number,
+    flaggedBatchCount: number,
+    submittedBatchCount: number
+  }
+}
+```
+
+##### `getLoanPortfolioSummary()`
+**Callable by**: `super_admin`, `admin`, `finance`
+**Purpose**: Detailed loan portfolio analysis
+**Returns**:
+```typescript
+{
+  portfolio: {
+    totalPortfolio: number,
+    totalDeployed: number,
+    totalDefaulted: number,
+    totalRepaid: number,
+    pendingDisbursement: number,
+    countByStatus: { pending, active, repaid, defaulted, rejected },
+    overdueLoanCount: number
+  }
+}
+```
+
+##### `getExceptions()`
+**Callable by**: `super_admin`, `admin`
+**Purpose**: List all exceptional situations requiring attention
+**Returns**:
+```typescript
+{
+  flaggedBatches: Array<{id, ...}>,
+  defaultedLoans: Array<{id, ...}>,
+  suspendedUsers: Array<{uid, fullName, ...}>,
+  suspendedGroups: Array<{id, name, ...}>
+}
+```
+**Note**: Limits each category to 50 items
+
+#### Audit Log
+
+##### `getAuditLog(targetType?, targetId?, actorId?, limit?)`
+**Callable by**: `super_admin`, `admin`
+**Purpose**: Query audit trail
+**Input**: `{ targetType?: string, targetId?: string, actorId?: string, limit?: number }`
+**Returns**: `{ entries: Array<{id, action, actorId, targetType, targetId, meta, createdAt}> }`
+**Note**: Max limit 200, defaults to 50
+
+---
+
+### Agent Provisioning Functions (4 Functions) - NEW in v3.1.9
+
+#### `provisionAgent(phone, fullName, pin, assignedGroups?)`
+**Callable by**: `super_admin`
+**Purpose**: Create new agent user with role
+**Input**: `{ phone: string, fullName: string, pin: string, assignedGroups?: string[] }`
+**Returns**: `{ userId: string }`
+**Side Effects**: Creates auth user, sets role to `agent`, status to `active`
+
+#### `assignAgentToGroup(agentId, groupId)`
+**Callable by**: `super_admin`, `admin`
+**Purpose**: Link agent to group
+**Input**: `{ agentId: string, groupId: string }`
+**Returns**: `{ success: true }`
+**Side Effects**: Adds groupId to agent's `assignedGroups` array
+
+#### `provisionAdmin(phone, fullName, pin, role)`
+**Callable by**: `super_admin`
+**Purpose**: Create new admin/finance user
+**Input**: `{ phone: string, fullName: string, pin: string, role: "admin" | "finance" }`
+**Returns**: `{ userId: string }`
+
+#### `provisionInstitutionUser(phone, fullName, pin, institutionId)`
+**Callable by**: `super_admin`
+**Purpose**: Create umuco staff user
+**Input**: `{ phone: string, fullName: string, pin: string, institutionId: string }`
+**Returns**: `{ userId: string }`
+**Side Effects**: Sets role to `umuco`, links to institution
+
+---
+
+### Group Management Functions (1 Function) - NEW in v3.1.9
+
+#### `adminSetGroupBorrowPause(groupId, isPaused, reason?)`
+**Callable by**: `super_admin`, `admin`
+**Purpose**: Pause/unpause loan requests for a group
+**Input**: `{ groupId: string, isPaused: boolean, reason?: string }`
+**Returns**: `{ success: true }`
+**Side Effects**: Updates `groups/{groupId}.borrowPaused` field
+
+---
+
+### Agent Reconciliation Functions (5 Functions) - NEW in v3.1.9
+
+#### `closeAgentDay(dateYYYYMMDD, cashCounted, notes?, offlinePendingCount?)`
+**Callable by**: `agent`
+**Purpose**: Close daily reconciliation
+**Input**: `{ dateYYYYMMDD: string (YYYY-MM-DD), cashCounted: number, notes?: string, offlinePendingCount?: number }`
+**Returns**: `{ reconciliationId, cashExpected, cashCounted, difference, depositCount, withdrawCount, commissionAccrued }`
+**Side Effects**: Upserts `agentReconciliations/{agentId}_{dateYYYYMMDD}` document (re-submittable unless status is `"reviewed"`)
+
+#### `adminUpdateReconciliation(reconciliationId, updates)`
+**Callable by**: `super_admin`, `admin`, `finance`
+**Purpose**: Adjust reconciliation record
+**Input**: `{ reconciliationId: string, updates: object }`
+**Returns**: `{ success: true }`
+
+#### `requestSettlement(periodStart, periodEnd, notes?)`
+**Callable by**: `agent`
+**Purpose**: Request payout of commissions for a date period
+**Input**: `{ periodStart: string (YYYY-MM-DD), periodEnd: string (YYYY-MM-DD), notes?: string }`
+**Returns**: `{ settlementId: string, commissionTotal: number }`
+**Side Effects**: Creates `agentSettlements/{id}` (status: `"requested"`). Deduplicates by exact `periodStart`/`periodEnd` — throws `already-exists` if open request for same period exists.
+
+#### `approveSettlement(settlementId, approvedAmount?, notes?)`
+**Callable by**: `super_admin`, `finance`
+**Purpose**: Approve settlement request
+**Input**: `{ settlementId: string, approvedAmount?: number, notes?: string }`
+**Returns**: `{ success: true }`
+
+#### `markSettlementPaid(settlementId, paidAmount, paymentReference, notes?)`
+**Callable by**: `super_admin`, `finance`
+**Purpose**: Record settlement payment
+**Input**: `{ settlementId: string, paidAmount: number, paymentReference: string, notes?: string }`
+**Returns**: `{ success: true }`
+**Side Effects**: Sets settlement status to `paid`
+
+---
+
+### Updated Member Functions (5+ new) - v3.1.9
+
+**New functions in members.js**:
+- `joinGroupByInviteCode(inviteCode)` - Join group via invite link
+- `setMemberInstitution(userId, institutionId)` - Link member to institution
+- `getGroupMembers(groupId)` - List all members in group
+- `initiateGroupSplit(groupId, newGroupName, memberIds)` - Split large group
+- `backfillLeaderGroupMembership()` - Admin utility to fix leader records
+- `rejectJoinRequest(joinRequestId, userId, reason)` - Reject join request
+
+### Updated Savings Functions (3+ new) - v3.1.9
+
+**New functions in savings.js**:
+- `memberRequestWithdrawal(amount, notes)` - Member initiates withdrawal
+- `adminApproveDeposits(transactionIds)` - Bulk approve deposits
+- `getAgentLedger(agentId, startDate?, endDate?)` - Query agent commissions
+
+### Updated Loans Functions (6+ new) - v3.1.9
+
+**New functions in loans.js**:
+- `getLoansDashboard(groupId?, status?)` - Admin loan overview
+- `getLoanDetails(loanId)` - Get single loan with full details
+- `approveLoan(loanId)` - Admin approve pending loan
+- `adminDisburseLoan(loanId, notes?)` - Admin disburse loan
+- `adminMarkRepayment(loanId, amount, notes?)` - Admin record repayment
+- `adminMarkLoanDefault(loanId, reason)` - Admin mark loan defaulted
+
+---
+
+### Scheduled Functions (1 Function) - NEW in v3.1.9
+
+#### `deleteExpiredNotifications()` [Scheduled]
+**Trigger**: Daily cleanup (runs at configured interval)
+**Purpose**: Delete old notifications past TTL
+**Logic**: Queries `notifications` collection for expired records, deletes in batches
+
+---
+
 ## Frontend Applications
 
 ### Common Structure
@@ -1027,6 +1483,107 @@ firebase deploy --only firestore:indexes      # Indexes only
 - [ ] Verify frontend builds without errors
 - [ ] Test auth flow (login/signup)
 - [ ] Verify role-based access in UI
+
+---
+
+## Constants & Enums
+
+All constants are defined in [functions/src/constants.js](functions/src/constants.js):
+
+### Roles
+```javascript
+ROLES = {
+  SUPER_ADMIN: "super_admin",    // Full platform control
+  ADMIN: "admin",                 // Business operations (v3.1.9+)
+  FINANCE: "finance",             // Financial oversight
+  AGENT: "agent",                 // Field staff
+  LEADER: "leader",               // Group leader
+  MEMBER: "member",               // Regular member
+  UMUCO: "umuco"                  // Institution staff
+}
+```
+
+### User & Group Status
+```javascript
+USER_STATUS = {
+  PENDING_APPROVAL: "pending_approval",
+  ACTIVE: "active",
+  SUSPENDED: "suspended",
+  REJECTED: "rejected"
+}
+
+GROUP_STATUS = {
+  PENDING_APPROVAL: "pending_approval",
+  ACTIVE: "active",
+  SUSPENDED: "suspended"
+}
+
+JOIN_REQUEST_STATUS = {
+  PENDING: "pending",
+  APPROVED: "approved",
+  REJECTED: "rejected"
+}
+```
+
+### Transaction Types & Status
+```javascript
+TRANSACTION_TYPE = {
+  DEPOSIT: "deposit",
+  WITHDRAWAL: "withdrawal",
+  LOAN_DISBURSE: "loan_disburse",
+  LOAN_REPAY: "loan_repay"
+}
+
+TRANSACTION_STATUS = {
+  PENDING_CONFIRMATION: "pending_confirmation",
+  CONFIRMED: "confirmed",
+  REJECTED: "rejected"
+}
+
+DEPOSIT_BATCH_STATUS = {
+  SUBMITTED: "submitted",
+  CONFIRMED: "confirmed",
+  FLAGGED: "flagged"
+}
+```
+
+### Loan Status & Terms
+```javascript
+LOAN_STATUS = {
+  PENDING: "pending",
+  ACTIVE: "active",
+  REPAID: "repaid",
+  DEFAULTED: "defaulted",
+  REJECTED: "rejected"
+}
+
+LOAN_TERMS = {
+  DAYS_7: 7,
+  DAYS_14: 14,
+  DAYS_30: 30
+}
+```
+
+### Agent Ledger & Settlement (v3.1.9+)
+```javascript
+LEDGER_TYPE = {
+  FEE: "fee",
+  COMMISSION: "commission"
+}
+
+LEDGER_STATUS = {
+  ACCRUED: "accrued",
+  SETTLED: "settled",
+  REVERSED: "reversed"
+}
+
+SETTLEMENT_STATUS = {
+  REQUESTED: "requested",
+  APPROVED: "approved",
+  PAID: "paid",
+  REJECTED: "rejected"
+}
+```
 
 ---
 
