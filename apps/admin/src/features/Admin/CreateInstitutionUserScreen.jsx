@@ -88,7 +88,7 @@ export default function CreateInstitutionUserScreen() {
 
   if (createdUserId) {
     return (
-      <main className="min-h-screen bg-slate-50 p-6">
+      <main className="px-8 py-7 bg-brand-50">
         <div className="mx-auto max-w-md">
           <section className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
             <h1 className="text-xl font-semibold text-slate-900">Institution User Created</h1>
@@ -102,7 +102,7 @@ export default function CreateInstitutionUserScreen() {
             <button
               type="button"
               onClick={() => navigate("/admin/dashboard")}
-              className="mt-5 w-full rounded-md bg-slate-900 px-4 py-2 text-sm font-medium text-white"
+              className="mt-5 w-full rounded-md bg-brand-500 px-4 py-2 text-sm font-medium text-white"
             >
               Back to Dashboard
             </button>
@@ -113,7 +113,7 @@ export default function CreateInstitutionUserScreen() {
   }
 
   return (
-    <main className="min-h-screen bg-slate-50 p-6">
+    <main className="px-8 py-7 bg-brand-50">
       <div className="mx-auto max-w-md">
         <section className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
           <button
@@ -203,7 +203,7 @@ export default function CreateInstitutionUserScreen() {
             <button
               type="submit"
               disabled={isSubmitting}
-              className="w-full rounded-md bg-slate-900 px-4 py-2 text-sm font-medium text-white disabled:opacity-60"
+              className="w-full rounded-md bg-brand-500 px-4 py-2 text-sm font-medium text-white disabled:opacity-60"
             >
               {isSubmitting ? "Creating..." : "Create Institution User"}
             </button>

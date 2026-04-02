@@ -1,6 +1,6 @@
 "use strict";
 /**
- * 04-seed-groups.js — Seed groups, groupMembers, agent assignedGroups,
+ * 04-seed-groups.js — Seed groups, groupMembers,
  * and backfill user.groupId / user.ledGroupId. Also resets receipt counters.
  *
  * GROUP CODE DECISION (documented):
@@ -103,31 +103,8 @@ async function run({ dryRun = false } = {}) {
     }
   }
 
-  // ── Phase 4: agent assignedGroups ────────────────────────────────────────
-  console.log("\n  Phase 4: agent assignedGroups");
-
-  // Build agent → groups map
-  const agentGroups = {};
-  for (const grp of GROUPS) {
-    for (const agentId of grp.agentIds) {
-      if (!agentGroups[agentId]) agentGroups[agentId] = [];
-      agentGroups[agentId].push(grp.id);
-    }
-  }
-
-  for (const [agentId, groupIds] of Object.entries(agentGroups)) {
-    await w(
-      dryRun,
-      `update users/${agentId} assignedGroups=${JSON.stringify(groupIds)}`,
-      () => db.collection("users").doc(agentId).update({
-        assignedGroups: groupIds,
-        updatedAt: now,
-      })
-    );
-  }
-
-  // ── Phase 5: reset receipt counters ──────────────────────────────────────
-  console.log("\n  Phase 5: reset counters");
+  // ── Phase 4: reset receipt counters ──────────────────────────────────────
+  console.log("\n  Phase 4: reset counters");
 
   const year = new Date().getFullYear();
   await w(
@@ -139,7 +116,7 @@ async function run({ dryRun = false } = {}) {
     })
   );
 
-  console.log(`\n  04-seed-groups: ${dryRun ? "dry-run complete" : "complete"}\n`);
+  console.log(`\n  04-seed-groups: ${dryRun ? "dry-run complete" : "complete"} (agent group assignment removed)\n`);
 }
 
 if (require.main === module) {

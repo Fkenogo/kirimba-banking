@@ -25,6 +25,7 @@ const LEDGER_TYPE_LABELS = {
   deduction: "Deduction",
   loan_out: "Loan Out",
   repayment_return: "Repayment In",
+  lending_fee_income: "Lending Fee",
   default_loss: "Default Loss",
   manual_adjustment: "Adjustment",
 };
@@ -34,6 +35,7 @@ const LEDGER_TYPE_COLORS = {
   deduction: "bg-orange-100 text-orange-700",
   loan_out: "bg-blue-100 text-blue-700",
   repayment_return: "bg-teal-100 text-teal-700",
+  lending_fee_income: "bg-violet-100 text-violet-700",
   default_loss: "bg-red-100 text-red-700",
   manual_adjustment: "bg-slate-100 text-slate-700",
 };
@@ -161,27 +163,27 @@ export default function KirimbaFundManagementScreen() {
   const f = fund || {};
 
   return (
-    <main className="min-h-screen bg-slate-50 p-6">
+    <main className="px-8 py-7 bg-brand-50">
       <div className="mx-auto max-w-5xl space-y-6">
 
         {/* Header */}
         <div className="flex items-center justify-between gap-4">
           <div>
             <button type="button" onClick={() => navigate("/admin/dashboard")}
-              className="mb-1 flex items-center gap-1 text-xs text-slate-500 hover:text-slate-700">
+              className="mb-1 flex items-center gap-1 text-xs font-medium text-brand-600 hover:text-brand-700">
               ← Back to Dashboard
             </button>
             <h1 className="text-xl font-semibold text-slate-900">Kirimba Fund Management</h1>
-            <p className="text-xs text-slate-400 mt-0.5">Capital overview, fund actions, and full ledger</p>
+            <p className="text-xs text-slate-400 mt-0.5">Capital overview, lending-fee income, group incentive accrual, and full ledger</p>
           </div>
           <button type="button" onClick={() => { loadFund(); loadLedger(); }} disabled={loading}
-            className="rounded-md border border-slate-300 px-3 py-1.5 text-sm text-slate-700 bg-white hover:bg-slate-50 disabled:opacity-60">
+            className="rounded-md border border-slate-300 px-3 py-1.5 text-sm text-slate-700 bg-white hover:bg-brand-50 disabled:opacity-60">
             Refresh
           </button>
         </div>
 
         {error && (
-          <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3">
+          <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3">
             <p className="text-sm text-red-700">{error}</p>
           </div>
         )}
@@ -191,7 +193,7 @@ export default function KirimbaFundManagementScreen() {
           </div>
         )}
         {actionError && (
-          <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3">
+          <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3">
             <p className="text-sm text-red-700">{actionError}</p>
           </div>
         )}
@@ -237,13 +239,15 @@ export default function KirimbaFundManagementScreen() {
               </button>
             </div>
           ) : (
-            <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
               <FundCard label="Total Capital" value={fmtBIF(f.totalCapital)} tone="slate" />
               <FundCard label="Available Balance" value={fmtBIF(f.availableFund)} tone="green" />
               <FundCard label="Locked in Loans" value={fmtBIF(f.deployedFund)} tone="blue" />
               <FundCard label="Total Collateral" value={fmtBIF(f.totalCollateral)} tone="purple" />
               <FundCard label="Defaulted Exposure" value={fmtBIF(f.defaultedExposure)} tone={f.defaultedExposure > 0 ? "red" : "neutral"} />
-              <FundCard label="Repayments Returned" value={fmtBIF(f.repaidReturned)} tone="teal" />
+              <FundCard label="Principal Returned" value={fmtBIF(f.repaidReturned)} tone="teal" />
+              <FundCard label="Fee Income Collected" value={fmtBIF(f.feeIncomeCollected)} tone="violet" />
+              <FundCard label="Group Incentive Accrued" value={fmtBIF(f.groupIncentiveAccrued)} tone="amber" />
             </div>
           )}
         </section>
@@ -309,7 +313,7 @@ export default function KirimbaFundManagementScreen() {
             <div className="rounded-xl border border-slate-200 bg-white overflow-hidden">
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
-                  <thead className="bg-slate-50 border-b border-slate-200">
+                  <thead className="bg-brand-50 border-b border-slate-200">
                     <tr>
                       <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">Date</th>
                       <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">Type</th>
@@ -320,9 +324,9 @@ export default function KirimbaFundManagementScreen() {
                       <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">Actor</th>
                     </tr>
                   </thead>
-                  <tbody className="divide-y divide-slate-100">
+                  <tbody className="divide-y divide-brand-50">
                     {ledger.map((entry) => (
-                      <tr key={entry.id} className="hover:bg-slate-50">
+                      <tr key={entry.id} className="hover:bg-brand-50">
                         <td className="px-4 py-3 text-xs text-slate-500 whitespace-nowrap">
                           {fmtDate(entry.createdAt)}
                         </td>
@@ -458,8 +462,10 @@ function FundCard({ label, value, tone }) {
     green: "border-green-200 bg-green-50 text-green-900",
     blue: "border-blue-200 bg-blue-50 text-blue-900",
     purple: "border-purple-200 bg-purple-50 text-purple-900",
+    amber: "border-amber-200 bg-amber-50 text-amber-900",
     red: "border-red-200 bg-red-50 text-red-900",
     teal: "border-teal-200 bg-teal-50 text-teal-900",
+    violet: "border-violet-200 bg-violet-50 text-violet-900",
     neutral: "border-slate-200 bg-white text-slate-900",
   }[tone] || "border-slate-200 bg-white text-slate-900";
 
@@ -505,12 +511,12 @@ function ModalActions({ onCancel, submitLabel, loading, color }) {
     indigo: "bg-indigo-600 hover:bg-indigo-700",
     green: "bg-green-600 hover:bg-green-700",
     red: "bg-red-600 hover:bg-red-700",
-  }[color] || "bg-slate-900 hover:bg-slate-800";
+  }[color] || "bg-brand-500 hover:bg-brand-600";
 
   return (
     <div className="flex gap-2 justify-end pt-1">
       <button type="button" onClick={onCancel}
-        className="rounded-md border border-slate-300 px-4 py-2 text-sm text-slate-700 hover:bg-slate-50">
+        className="rounded-md border border-slate-300 px-4 py-2 text-sm text-slate-700 hover:bg-brand-50">
         Cancel
       </button>
       <button type="submit" disabled={!!loading}

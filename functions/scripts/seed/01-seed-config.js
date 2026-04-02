@@ -13,29 +13,31 @@ const db = admin.firestore();
 const { FieldValue } = require("firebase-admin/firestore");
 
 const { requireProjectGuard, w, parseArgs } = require("./lib");
+const { normalizeAgentFeeConfig, normalizeCommissionPolicyConfig } = require("../../src/agentPricing");
 
 // Initial fund capital seeded into kirimbaFund/current.
 // MUST be > 0. Zero causes every loan request to fail with "Insufficient fund".
 const INITIAL_AVAILABLE_FUND = 10_000_000; // 10M BIF
 
 const SYSTEM_CONFIG = {
-  fees: {
-    depositFeeFlat:       0,
-    withdrawFeeFlat:      0,
-    agentCommissionRate:  0.01,
-  },
+  fees: normalizeAgentFeeConfig({}),
   loanPolicy: {
+    autoApproval: true,
     maxLoanMultiplier: 1.5,
-    minLoanAmount:     1000,
-    maxLoanAmount:     5_000_000,
-    defaultTermDays:   30,
-    interestRates:     { "7": 0.06, "14": 0.05, "30": 0.04 },
+    minLoanAmount: 1000,
+    maxLoanAmount: 5_000_000,
+    defaultTermDays: 14,
+    earlySettlementRebateEnabled: false,
+    rebateMode: "deferred",
+    groupIncentiveSharePct: 0.1,
+    termPricing: [
+      { durationDays: 7, contractedFeePct: 0.025, minimumFeeFloor: 0, rebateBands: [], active: true },
+      { durationDays: 14, contractedFeePct: 0.04, minimumFeeFloor: 0, rebateBands: [], active: true },
+      { durationDays: 21, contractedFeePct: 0.055, minimumFeeFloor: 0, rebateBands: [], active: true },
+      { durationDays: 30, contractedFeePct: 0.07, minimumFeeFloor: 0, rebateBands: [], active: true },
+    ],
   },
-  commissionPolicy: {
-    agentDepositCommissionRate: 0.01,
-    agentLoanCommissionRate:    0.005,
-    settlementCycleDays:        30,
-  },
+  commissionPolicy: normalizeCommissionPolicyConfig({}, normalizeAgentFeeConfig({})),
   businessRules: {
     minBalanceBIF:                5000,
     largeWithdrawalThresholdBIF:  50000,

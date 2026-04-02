@@ -1,67 +1,106 @@
 import { useState } from "react";
-import { useNavigate } from "react-router-dom";
 import { doc, getDoc } from "firebase/firestore";
 import { httpsCallable } from "firebase/functions";
 import { db, functions } from "../../services/firebase";
+import { ManualMemberLookup, QrScanner, fetchMemberByMemberId } from "../../utils/memberLookup";
+import { PageShell, Card, Alert, PrimaryButton, formatBIF } from "../../components/ui";
 
-function formatBIF(n) {
-  return `${Number(n || 0).toLocaleString("en-US")} BIF`;
-}
+const SCREEN = {
+  SCANNING: "scanning",
+  MANUAL_LOOKUP: "manual_lookup",
+  MEMBER_FOUND: "member_found",
+  RECEIPT: "receipt",
+};
 
 export default function AgentWithdrawalScreen({ user }) {
-  const navigate = useNavigate();
-  const [memberId, setMemberId] = useState("");
-  const [memberData, setMemberData] = useState(null);
-  const [amount, setAmount] = useState("");
-  const [notes, setNotes] = useState("");
-  const [looking, setLooking] = useState(false);
-  const [lookError, setLookError] = useState("");
-  const [submitting, setSubmitting] = useState(false);
+  const [screen,      setScreen]      = useState(SCREEN.SCANNING);
+  const [memberData,  setMemberData]  = useState(null);
+  const [amount,      setAmount]      = useState("");
+  const [notes,       setNotes]       = useState("");
+  const [looking,     setLooking]     = useState(false);
+  const [lookError,   setLookError]   = useState("");
+  const [submitting,  setSubmitting]  = useState(false);
   const [submitError, setSubmitError] = useState("");
-  const [receipt, setReceipt] = useState(null);
+  const [receipt,     setReceipt]     = useState(null);
 
-  async function handleLookup(e) {
-    e.preventDefault();
+  // Scan → Fetch member → Fetch wallet (two-stage lookup)
+  async function handleScan(qrText) {
     setLookError("");
-    setMemberData(null);
-    setReceipt(null);
-    const uid = memberId.trim();
-    if (!uid) return;
-    setLooking(true);
+    let data;
     try {
-      const [userSnap, walletSnap] = await Promise.all([
-        getDoc(doc(db, "users", uid)),
-        getDoc(doc(db, "wallets", uid)),
-      ]);
-      if (!userSnap.exists()) {
-        setLookError("Member not found. Check the ID and try again.");
+      data = JSON.parse(qrText);
+    } catch {
+      setLookError("Invalid QR code format.");
+      return;
+    }
+    if (!data?.memberId) {
+      setLookError("QR code is missing member ID.");
+      return;
+    }
+    await loadMemberAndWallet(data.memberId);
+  }
+
+  async function loadMemberAndWallet(memberId) {
+    setLooking(true);
+    setLookError("");
+    try {
+      const member = await fetchMemberByMemberId(memberId.trim());
+      if (!member) {
+        setLookError(`No member found for ID "${memberId}".`);
         return;
       }
-      const u = userSnap.data();
-      const w = walletSnap.exists() ? walletSnap.data() : {};
-      setMemberData({ uid, name: u.fullName || "—", phone: u.phone || "—", wallet: w });
+      if (!member.isSelectable) {
+        setLookError(member.restriction || "This member cannot be selected.");
+        return;
+      }
+      await loadSelectedMember(member);
     } catch (err) {
-      setLookError(err.message || "Lookup failed.");
+      setLookError(err.message || "Lookup failed. Check connection and try again.");
     } finally {
       setLooking(false);
+    }
+  }
+
+  async function loadSelectedMember(member) {
+    try {
+      const [userSnap, walletSnap] = await Promise.all([
+        getDoc(doc(db, "users", member.userId)),
+        getDoc(doc(db, "wallets", member.userId)),
+      ]);
+
+      if (!userSnap.exists()) {
+        setLookError("Member data not found.");
+        return;
+      }
+
+      const u = userSnap.data();
+      const w = walletSnap.exists() ? walletSnap.data() : {};
+
+      setMemberData({
+        uid: member.userId,
+        memberId: member.memberId,
+        name: u.fullName || member.fullName || "—",
+        phone: u.phone || member.phone || "—",
+        groupId: member.groupId ?? null,
+        wallet: w
+      });
+      setScreen(SCREEN.MEMBER_FOUND);
+    } catch (err) {
+      setLookError(err.message || "Lookup failed. Check connection and try again.");
     }
   }
 
   async function handleSubmit(e) {
     e.preventDefault();
     const parsed = Number(amount);
-    if (!Number.isFinite(parsed) || parsed <= 0) {
-      setSubmitError("Enter a valid amount.");
-      return;
-    }
+    if (!Number.isFinite(parsed) || parsed <= 0) { setSubmitError("Enter a valid amount."); return; }
     setSubmitting(true);
     setSubmitError("");
     try {
-      const fn = httpsCallable(functions, "recordWithdrawal");
+      const fn  = httpsCallable(functions, "recordWithdrawal");
       const res = await fn({ userId: memberData.uid, amount: parsed, notes: notes.trim() });
       setReceipt({ ...res.data, amount: parsed, memberName: memberData.name });
-      setMemberData(null);
-      setMemberId("");
+      setScreen(SCREEN.RECEIPT);
       setAmount("");
       setNotes("");
     } catch (err) {
@@ -71,135 +110,196 @@ export default function AgentWithdrawalScreen({ user }) {
     }
   }
 
+  function reset() {
+    setScreen(SCREEN.SCANNING);
+    setMemberData(null);
+    setAmount("");
+    setNotes("");
+    setLookError("");
+    setSubmitError("");
+    setReceipt(null);
+  }
+
   return (
-    <main className="min-h-screen bg-slate-50 pb-10">
-      <div className="max-w-lg mx-auto px-4 pt-6 space-y-5">
+    <PageShell title="Process Withdrawal" showBack user={user}>
 
-        <div>
-          <button type="button" onClick={() => navigate("/agent/home")}
-            className="mb-1 text-xs text-slate-500 hover:text-slate-700">← Home</button>
-          <h1 className="text-xl font-bold text-slate-900">Process Withdrawal</h1>
-          <p className="text-xs text-slate-400 mt-0.5">Disburse cash to a member</p>
-        </div>
+      {/* ── SCANNING STATE ── */}
+      {screen === SCREEN.SCANNING && (
+        <>
+          <p className="text-sm text-slate-500 text-center">Point the camera at member QR code</p>
 
-        {/* Success */}
-        {receipt && (
-          <div className="rounded-xl bg-green-50 border border-green-200 px-5 py-5 space-y-3 text-center">
-            <div className="text-3xl">✓</div>
-            <h3 className="text-base font-bold text-green-800">Withdrawal Processed</h3>
-            <div className="rounded-lg bg-white border border-green-100 divide-y divide-green-50 text-sm text-left">
-              <DetailRow label="Member" value={receipt.memberName} />
-              <DetailRow label="Amount" value={formatBIF(receipt.amount)} />
-              {receipt.receiptNo && <DetailRow label="Receipt" value={receipt.receiptNo} />}
-              <DetailRow label="Status" value={receipt.status === "confirmed" ? "Confirmed" : "Pending approval"} />
+          <Card>
+            <div className="overflow-hidden rounded-3xl">
+              <QrScanner onScan={handleScan} />
             </div>
-            {receipt.status !== "confirmed" && (
-              <p className="text-xs text-amber-700 bg-amber-50 rounded-lg px-3 py-2">
-                Large withdrawal submitted for approval. Member will be notified.
-              </p>
-            )}
-            <button type="button" onClick={() => setReceipt(null)}
-              className="text-sm font-medium text-green-700 underline underline-offset-2">
-              Process another withdrawal
+          </Card>
+
+          <button
+            type="button"
+            onClick={() => { setLookError(""); setScreen(SCREEN.MANUAL_LOOKUP); }}
+            className="w-full rounded-2xl border-2 border-brand-100 bg-white px-4 py-3 text-sm font-bold text-brand-600 hover:bg-brand-50 transition-colors"
+          >
+            Can't scan? Find member manually
+          </button>
+
+          {looking && (
+            <div className="flex items-center justify-center gap-2 py-2">
+              <svg className="w-4 h-4 animate-spin text-brand-500" fill="none" viewBox="0 0 24 24">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z" />
+              </svg>
+              <p className="text-sm text-brand-600 font-medium">Looking up member…</p>
+            </div>
+          )}
+
+          {lookError && (
+            <Alert type="error">
+              <div className="flex items-start justify-between gap-2">
+                <span>{lookError}</span>
+                <button onClick={() => setLookError("")} className="text-red-400 hover:text-red-600 shrink-0">×</button>
+              </div>
+            </Alert>
+          )}
+        </>
+      )}
+
+      {screen === SCREEN.MANUAL_LOOKUP && (
+        <>
+          <ManualMemberLookup
+            onCancel={reset}
+            onSelect={async (selectedMember) => {
+              setLookError("");
+              setLooking(true);
+              await loadSelectedMember(selectedMember);
+              setLooking(false);
+            }}
+          />
+          {lookError ? <Alert type="error">{lookError}</Alert> : null}
+        </>
+      )}
+
+      {/* ── MEMBER FOUND STATE ── */}
+      {screen === SCREEN.MEMBER_FOUND && memberData && (
+        <>
+          {/* Member identity hero */}
+          <div className="bg-brand-800 rounded-2xl px-5 py-5">
+            <p className="text-[11px] font-bold uppercase tracking-widest text-brand-300 mb-2">Member</p>
+            <p className="text-xl font-bold text-white truncate">{memberData.name}</p>
+            <p className="text-sm text-brand-300 mt-0.5">{memberData.phone}</p>
+
+            <div className="mt-4 pt-4 border-t border-brand-700 grid grid-cols-2 gap-3">
+              <div>
+                <p className="text-[11px] text-brand-400 uppercase tracking-wide">Available</p>
+                <p className="text-base font-bold text-white mt-0.5">
+                  {formatBIF(memberData.wallet.availableBalance)}
+                </p>
+              </div>
+              <div>
+                <p className="text-[11px] text-brand-400 uppercase tracking-wide">Locked</p>
+                <p className="text-base font-bold text-gold-300 mt-0.5">
+                  {formatBIF(memberData.wallet.balanceLocked)}
+                </p>
+              </div>
+            </div>
+
+            <button
+              type="button"
+              onClick={reset}
+              className="text-xs text-brand-400 hover:text-brand-200 mt-3 font-semibold"
+            >
+              ← Scan different member
             </button>
           </div>
-        )}
 
-        {!receipt && (
-          <>
-            {/* Member lookup */}
-            <form onSubmit={handleLookup} className="rounded-xl bg-white border border-slate-200 px-4 py-4 space-y-3">
-              <p className="text-sm font-medium text-slate-700">Member ID / UID</p>
-              <input
-                type="text"
-                value={memberId}
-                onChange={(e) => { setMemberId(e.target.value); setLookError(""); setMemberData(null); }}
-                placeholder="Paste or scan member UID"
-                className="w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
-              />
-              {lookError && <p className="text-sm text-red-600">{lookError}</p>}
-              <button type="submit" disabled={looking || !memberId.trim()}
-                className="w-full rounded-xl bg-indigo-600 text-white font-semibold py-3 text-sm disabled:opacity-50">
-                {looking ? "Looking up…" : "Look Up Member"}
-              </button>
-            </form>
-
-            {/* Member info + withdrawal form */}
-            {memberData && (
-              <form onSubmit={handleSubmit} className="space-y-4">
-                {/* Member card */}
-                <div className="rounded-xl bg-slate-800 text-white px-4 py-4 space-y-2">
-                  <p className="text-xs text-slate-400 font-medium uppercase tracking-wide">Member</p>
-                  <p className="text-base font-bold">{memberData.name}</p>
-                  <p className="text-xs text-slate-400">{memberData.phone}</p>
-                  <div className="pt-2 border-t border-slate-700 grid grid-cols-2 gap-2 text-xs">
-                    <div>
-                      <p className="text-slate-400">Available</p>
-                      <p className="font-semibold text-green-400">{formatBIF(memberData.wallet.availableBalance)}</p>
-                    </div>
-                    <div>
-                      <p className="text-slate-400">Locked</p>
-                      <p className="font-semibold text-amber-400">{formatBIF(memberData.wallet.balanceLocked)}</p>
-                    </div>
-                  </div>
-                  <button type="button" onClick={() => { setMemberData(null); setMemberId(""); }}
-                    className="text-xs text-slate-400 hover:text-slate-200 pt-1">
-                    Change member
-                  </button>
-                </div>
-
-                {/* Amount */}
-                <div>
-                  <label className="block text-sm font-medium text-slate-700 mb-1.5">
+          <form onSubmit={handleSubmit} className="space-y-4">
+            <Card>
+              <div className="px-5 py-5 space-y-4">
+                <div className="space-y-1.5">
+                  <label className="block text-xs font-bold text-slate-600 uppercase tracking-wide">
                     Withdrawal Amount (BIF)
                   </label>
                   <input
                     type="number"
                     inputMode="numeric"
                     min="1"
-                    step="1"
                     value={amount}
                     onChange={(e) => { setAmount(e.target.value); setSubmitError(""); }}
                     placeholder={`Available: ${formatBIF(memberData.wallet.availableBalance)}`}
-                    className="w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-base focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    className="w-full rounded-2xl border-2 border-slate-100 bg-slate-50 px-4 py-3.5 text-base text-slate-800 placeholder-slate-300 focus:outline-none focus:border-brand-400 focus:bg-white transition-colors"
                   />
-                  <p className="text-xs text-slate-400 mt-1">Amounts ≥ 50,000 BIF require admin approval.</p>
+                  <p className="text-[11px] text-slate-400">Amounts ≥ 50,000 BIF require admin approval.</p>
                 </div>
 
-                {/* Notes */}
-                <div>
-                  <label className="block text-sm font-medium text-slate-700 mb-1.5">Notes (optional)</label>
+                <div className="space-y-1.5">
+                  <label className="block text-xs font-bold text-slate-600 uppercase tracking-wide">
+                    Notes (optional)
+                  </label>
                   <input
                     type="text"
                     value={notes}
                     onChange={(e) => setNotes(e.target.value)}
                     placeholder="Reason or reference"
-                    className="w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    className="w-full rounded-2xl border-2 border-slate-100 bg-slate-50 px-4 py-3 text-sm text-slate-800 placeholder-slate-300 focus:outline-none focus:border-brand-400 focus:bg-white transition-colors"
                   />
                 </div>
+              </div>
+            </Card>
 
-                {submitError && (
-                  <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-4 py-2.5">{submitError}</p>
-                )}
+            {submitError && <Alert type="error">{submitError}</Alert>}
 
-                <button type="submit" disabled={submitting || !amount}
-                  className="w-full rounded-xl bg-blue-600 text-white font-semibold py-3 text-sm disabled:opacity-50">
-                  {submitting ? "Processing…" : "Process Withdrawal"}
-                </button>
-              </form>
+            <PrimaryButton type="submit" loading={submitting} disabled={!amount}>
+              {submitting ? "Processing…" : "Process Withdrawal"}
+            </PrimaryButton>
+          </form>
+        </>
+      )}
+
+      {/* ── RECEIPT STATE ── */}
+      {screen === SCREEN.RECEIPT && receipt && (
+        <Card>
+          <div className="px-5 py-8 flex flex-col items-center text-center space-y-4">
+            <div className="w-16 h-16 bg-brand-100 rounded-full flex items-center justify-center">
+              <svg className="w-8 h-8 text-brand-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+              </svg>
+            </div>
+            <div>
+              <p className="text-lg font-bold text-slate-800">Withdrawal Processed</p>
+              {receipt.status !== "confirmed" && (
+                <p className="text-sm text-gold-600 font-medium mt-1">Large withdrawal submitted for approval.</p>
+              )}
+            </div>
+
+            <div className="w-full bg-slate-50 rounded-2xl divide-y divide-white">
+              <ReceiptRow label="Member"  value={receipt.memberName} />
+              <ReceiptRow label="Amount"  value={formatBIF(receipt.amount)} />
+              {receipt.receiptNo && <ReceiptRow label="Receipt No." value={receipt.receiptNo} mono />}
+              <ReceiptRow label="Status"  value={receipt.status === "confirmed" ? "Confirmed" : "Pending Approval"} />
+            </div>
+
+            {receipt.status !== "confirmed" && (
+              <Alert type="warning">
+                This is a large withdrawal (≥ 50,000 BIF). It has been submitted for admin approval and the member will be notified.
+              </Alert>
             )}
-          </>
-        )}
-      </div>
-    </main>
+
+            <button type="button" onClick={reset}
+              className="w-full py-3.5 rounded-2xl border-2 border-brand-100 text-sm font-bold text-brand-600 hover:bg-brand-50 transition-colors">
+              Process Another Withdrawal
+            </button>
+          </div>
+        </Card>
+      )}
+
+    </PageShell>
   );
 }
 
-function DetailRow({ label, value }) {
+function ReceiptRow({ label, value, mono = false }) {
   return (
-    <div className="px-4 py-2.5 flex justify-between items-center">
-      <span className="text-slate-500 text-sm">{label}</span>
-      <span className="font-medium text-slate-900 text-sm">{value}</span>
+    <div className="px-4 py-3 flex items-center justify-between gap-2">
+      <span className="text-xs text-slate-400">{label}</span>
+      <span className={`text-sm font-semibold text-slate-800 ${mono ? "font-mono" : ""}`}>{value}</span>
     </div>
   );
 }

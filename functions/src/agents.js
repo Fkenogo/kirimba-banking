@@ -18,6 +18,22 @@ function httpsError(code, message) {
   return new functions.https.HttpsError(code, message);
 }
 
+async function writeAuditLog(actorUid, actorRole, action, targetType, targetId, meta = {}) {
+  try {
+    await db.collection("auditLog").add({
+      actorId: actorUid || null,
+      actorRole: actorRole || null,
+      action,
+      targetType,
+      targetId: targetId || null,
+      meta,
+      createdAt: FieldValue.serverTimestamp(),
+    });
+  } catch (error) {
+    console.error("[auditLog] Failed to write audit log:", error.message, { action, targetType, targetId });
+  }
+}
+
 function toProvisioningError(error, fallbackMessage = "User provisioning failed.") {
   if (error instanceof functions.https.HttpsError) {
     return error;
@@ -47,7 +63,7 @@ function requireRoles(context, allowedRoles) {
   if (!role || !allowedRoles.includes(role)) {
     throw httpsError("permission-denied", "Insufficient permissions.");
   }
-  return context.auth.uid;
+  return { uid: context.auth.uid, role };
 }
 
 async function assertEmailNotTaken(email) {
@@ -166,108 +182,110 @@ async function provisionUserWithRole({
  * Callable by admin or super_admin.
  */
 const provisionAgent = functions.https.onCall(async (data, context) => {
-  const callerUid = requireRoles(context, [ROLES.SUPER_ADMIN, ROLES.ADMIN]);
-  const { fullName, phone, pin } = data;
-  const { uid, normalizedPhone } = await provisionUserWithRole({
-    fullName,
-    phone,
-    pin,
-    role: ROLES.AGENT,
-    callerUid,
-  });
-
-  // Atomic batch write
-  const batch = db.batch();
-
-  const userRef = db.collection("users").doc(uid);
-  batch.set(
-    userRef,
-    {
-      uid,
-      fullName: fullName.trim(),
-      phone: normalizedPhone,
-      role: ROLES.AGENT,
-      status: "active",
-      groupId: null,
-      isLeader: false,
-      ledGroupId: null,
-      nationalId: null,
-      createdAt: FieldValue.serverTimestamp(),
-      createdBy: callerUid,
-      },
-      { merge: true }
-  );
-
-  const agentRef = db.collection("agents").doc(uid);
-  batch.set(agentRef, {
-    uid,
-    fullName: fullName.trim(),
-    phone: normalizedPhone,
-    role: ROLES.AGENT,
-    status: "active",
-    assignedGroups: [],
-    createdAt: FieldValue.serverTimestamp(),
-    createdBy: callerUid,
-    updatedAt: null,
-  });
-
-  await batch.commit();
-
-  return { success: true, agentId: uid };
+  requireRoles(context, [ROLES.SUPER_ADMIN, ROLES.ADMIN]);
+  throw httpsError("failed-precondition", "Direct provisioning is retired. Create an invitation instead.");
 });
 
-/**
- * Assign a provisioned agent to an active group.
- * Callable by admin or super_admin.
- */
-const assignAgentToGroup = functions.https.onCall(async (data, context) => {
-  requireRoles(context, [ROLES.SUPER_ADMIN, ROLES.ADMIN]);
-
-  const { agentId, groupId } = data;
-
-  // Validate inputs
-  if (!isNonEmptyString(agentId) || !isNonEmptyString(groupId)) {
-    throw httpsError("invalid-argument", "agentId and groupId are required.");
-  }
-
+async function getValidatedAgentRecords(agentId) {
   const agentRef = db.collection("agents").doc(agentId);
-  const groupRef = db.collection("groups").doc(groupId);
+  const userRef = db.collection("users").doc(agentId);
+  const [agentSnap, userSnap] = await Promise.all([agentRef.get(), userRef.get()]);
 
-  // Load documents in parallel
-  const [agentSnap, groupSnap] = await Promise.all([agentRef.get(), groupRef.get()]);
-
-  // Validate agent
   if (!agentSnap.exists) {
-    throw httpsError("not-found", "Agent not found.");
+    throw httpsError("not-found", "Agent profile not found.");
   }
-  const agentData = agentSnap.data();
-  if (agentData.role !== ROLES.AGENT) {
-    throw httpsError("failed-precondition", "User is not an agent.");
-  }
-  if (agentData.status !== "active") {
-    throw httpsError("failed-precondition", "Agent is not active.");
-  }
-  if ((agentData.assignedGroups || []).includes(groupId)) {
-    throw httpsError("already-exists", "Agent is already assigned to this group.");
+  if (!userSnap.exists) {
+    throw httpsError("failed-precondition", "Agent access record is incomplete.");
   }
 
-  // Validate group
-  if (!groupSnap.exists) {
-    throw httpsError("not-found", "Group not found.");
-  }
-  if (groupSnap.data().status !== "active") {
-    throw httpsError("failed-precondition", "Group is not active.");
+  const agentData = agentSnap.data() || {};
+  const userData = userSnap.data() || {};
+  if (agentData.role !== ROLES.AGENT || userData.role !== ROLES.AGENT) {
+    throw httpsError("failed-precondition", "Target record is not an agent.");
   }
 
-  // Atomic batch write
+  return { agentRef, userRef, agentData, userData };
+}
+
+const suspendAgent = functions.https.onCall(async (data, context) => {
+  const caller = requireRoles(context, [ROLES.SUPER_ADMIN, ROLES.ADMIN]);
+
+  const agentId = String(data?.agentId || "").trim();
+  const reason = String(data?.reason || "").trim();
+  if (!isNonEmptyString(agentId)) {
+    throw httpsError("invalid-argument", "agentId is required.");
+  }
+  if (!reason) {
+    throw httpsError("invalid-argument", "reason is required.");
+  }
+
+  const { agentRef, userRef, agentData, userData } = await getValidatedAgentRecords(agentId);
+  if (agentData.status === "suspended" || userData.status === "suspended") {
+    throw httpsError("failed-precondition", "Agent is already suspended.");
+  }
+
   const batch = db.batch();
-  batch.update(agentRef, { assignedGroups: FieldValue.arrayUnion(groupId), updatedAt: FieldValue.serverTimestamp() });
-  batch.set(
-    db.collection("users").doc(agentId),
-    { assignedGroups: FieldValue.arrayUnion(groupId), updatedAt: FieldValue.serverTimestamp() },
-    { merge: true }
-  );
+  batch.update(userRef, {
+    status: "suspended",
+    suspendedAt: FieldValue.serverTimestamp(),
+    suspendedBy: caller.uid,
+    suspendReason: reason,
+    updatedAt: FieldValue.serverTimestamp(),
+    updatedBy: caller.uid,
+  });
+  batch.update(agentRef, {
+    status: "suspended",
+    suspendedAt: FieldValue.serverTimestamp(),
+    suspendedBy: caller.uid,
+    suspendReason: reason,
+    updatedAt: FieldValue.serverTimestamp(),
+    updatedBy: caller.uid,
+  });
   await batch.commit();
+
+  await writeAuditLog(caller.uid, caller.role, "agent_suspended", "agent", agentId, {
+    reason,
+    institutionId: userData.institutionId || agentData.institutionId || null,
+  });
+
+  return { success: true };
+});
+
+const reactivateAgent = functions.https.onCall(async (data, context) => {
+  const caller = requireRoles(context, [ROLES.SUPER_ADMIN, ROLES.ADMIN]);
+
+  const agentId = String(data?.agentId || "").trim();
+  if (!isNonEmptyString(agentId)) {
+    throw httpsError("invalid-argument", "agentId is required.");
+  }
+
+  const { agentRef, userRef, agentData, userData } = await getValidatedAgentRecords(agentId);
+  if (agentData.status !== "suspended" && userData.status !== "suspended") {
+    throw httpsError("failed-precondition", "Agent is not suspended.");
+  }
+
+  const batch = db.batch();
+  batch.update(userRef, {
+    status: "active",
+    reactivatedAt: FieldValue.serverTimestamp(),
+    reactivatedBy: caller.uid,
+    suspendReason: FieldValue.delete(),
+    updatedAt: FieldValue.serverTimestamp(),
+    updatedBy: caller.uid,
+  });
+  batch.update(agentRef, {
+    status: "active",
+    reactivatedAt: FieldValue.serverTimestamp(),
+    reactivatedBy: caller.uid,
+    suspendReason: FieldValue.delete(),
+    updatedAt: FieldValue.serverTimestamp(),
+    updatedBy: caller.uid,
+  });
+  await batch.commit();
+
+  await writeAuditLog(caller.uid, caller.role, "agent_reactivated", "agent", agentId, {
+    institutionId: userData.institutionId || agentData.institutionId || null,
+  });
 
   return { success: true };
 });
@@ -277,16 +295,8 @@ const assignAgentToGroup = functions.https.onCall(async (data, context) => {
  * Callable by super_admin only.
  */
 const provisionAdmin = functions.https.onCall(async (data, context) => {
-  const callerUid = requireRoles(context, [ROLES.SUPER_ADMIN]);
-  const { fullName, phone, pin } = data;
-  const { uid } = await provisionUserWithRole({
-    fullName,
-    phone,
-    pin,
-    role: ROLES.ADMIN,
-    callerUid,
-  });
-  return { success: true, adminId: uid };
+  requireRoles(context, [ROLES.SUPER_ADMIN]);
+  throw httpsError("failed-precondition", "Direct provisioning is retired. Create an invitation instead.");
 });
 
 /**
@@ -294,38 +304,14 @@ const provisionAdmin = functions.https.onCall(async (data, context) => {
  * Callable by admin or super_admin.
  */
 const provisionInstitutionUser = functions.https.onCall(async (data, context) => {
-  const callerUid = requireRoles(context, [ROLES.SUPER_ADMIN, ROLES.ADMIN]);
-  const { fullName, phone, pin, institutionId } = data;
-
-  const trimmedInstitutionId = isNonEmptyString(institutionId) ? institutionId.trim() : null;
-  if (!trimmedInstitutionId) {
-    throw new functions.https.HttpsError("invalid-argument", "institutionId is required.");
-  }
-
-  const instSnap = await db.collection("institutions").doc(trimmedInstitutionId).get();
-  if (!instSnap.exists) {
-    throw new functions.https.HttpsError("not-found", `Institution "${trimmedInstitutionId}" not found.`);
-  }
-  if (instSnap.data().status === "suspended") {
-    throw new functions.https.HttpsError("failed-precondition", `Institution "${trimmedInstitutionId}" is suspended.`);
-  }
-
-  const { uid } = await provisionUserWithRole({
-    fullName,
-    phone,
-    pin,
-    role: ROLES.INSTITUTION_USER,
-    callerUid,
-    userExtra: { institutionId: trimmedInstitutionId },
-    extraClaims: { institutionId: trimmedInstitutionId },
-  });
-
-  return { success: true, institutionUserId: uid };
+  requireRoles(context, [ROLES.SUPER_ADMIN, ROLES.ADMIN]);
+  throw httpsError("failed-precondition", "Direct provisioning is retired. Create an invitation instead.");
 });
 
 module.exports = {
   provisionAgent,
-  assignAgentToGroup,
+  suspendAgent,
+  reactivateAgent,
   provisionAdmin,
   provisionInstitutionUser,
 };

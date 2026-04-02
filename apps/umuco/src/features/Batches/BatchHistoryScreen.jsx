@@ -1,50 +1,36 @@
-import { useEffect, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { useEffect, useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 import {
-  collection,
-  doc,
-  getDoc,
-  getDocs,
-  orderBy,
-  query,
-  where,
+  collection, doc, getDoc, getDocs, orderBy, query, where,
 } from "firebase/firestore";
 import { db } from "../../services/firebase";
-
-function formatAmount(n) {
-  return `${Number(n || 0).toLocaleString("en-US")} BIF`;
-}
-
-function formatDate(ts) {
-  if (!ts) return "—";
-  const d = ts._seconds ? new Date(ts._seconds * 1000) : ts.toDate ? ts.toDate() : new Date(ts);
-  return d.toLocaleString([], {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
-}
+import {
+  PageShell, Card, Alert, EmptyState, LoadingState,
+  StatusBadge, PrimaryButton, formatBIF, formatDate,
+} from "../../components/ui";
+import { buildBatchFilterOptions, filterBatchRows } from "./batchFilters";
 
 const STATUS_TABS = [
-  { key: "all", label: "All" },
+  { key: "all",       label: "All" },
   { key: "confirmed", label: "Confirmed" },
-  { key: "flagged", label: "Flagged" },
+  { key: "flagged",   label: "Flagged" },
 ];
 
-export default function BatchHistoryScreen({ institutionId }) {
-  const navigate = useNavigate();
+export default function BatchHistoryScreen({ institutionId, institutionName }) {
   const [allBatches, setAllBatches] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
+  const [loading, setLoading]       = useState(true);
+  const [error, setError]           = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
+  const [filters, setFilters] = useState({
+    query: "",
+    groupId: "",
+    agentId: "",
+    dateFrom: "",
+    dateTo: "",
+  });
 
   async function load() {
-    if (!institutionId) {
-      setLoading(false);
-      return;
-    }
+    if (!institutionId) { setLoading(false); return; }
     setLoading(true);
     setError("");
     try {
@@ -59,7 +45,6 @@ export default function BatchHistoryScreen({ institutionId }) {
 
       const rows = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
 
-      // Batch-fetch group + agent names
       const groupIds = [...new Set(rows.map((b) => b.groupId).filter(Boolean))];
       const agentIds = [...new Set(rows.map((b) => b.agentId).filter(Boolean))];
 
@@ -95,152 +80,164 @@ export default function BatchHistoryScreen({ institutionId }) {
     }
   }
 
-  useEffect(() => {
-    load();
-  }, []);
+  useEffect(() => { load(); }, []);
 
-  const batches =
-    statusFilter === "all"
-      ? allBatches
-      : allBatches.filter((b) => b.status === statusFilter);
+  const statusRows = useMemo(
+    () => (statusFilter === "all" ? allBatches : allBatches.filter((b) => b.status === statusFilter)),
+    [allBatches, statusFilter]
+  );
+  const filterOptions = useMemo(() => buildBatchFilterOptions(allBatches), [allBatches]);
+  const batches = useMemo(
+    () => filterBatchRows(statusRows, filters, { dateField: "submittedAt" }),
+    [statusRows, filters]
+  );
 
   return (
-    <main className="min-h-screen bg-slate-50 p-6">
-      <div className="mx-auto max-w-5xl space-y-4">
-        <div className="flex items-center justify-between gap-4">
-          <div>
-            <button
-              type="button"
-              onClick={() => navigate("/umuco/home")}
-              className="mb-1 flex items-center gap-1 text-xs text-slate-500 hover:text-slate-700"
-            >
-              ← Back to Home
-            </button>
-            <h1 className="text-xl font-semibold text-slate-900">Batch History</h1>
-            {!loading && (
-              <p className="text-xs text-slate-400 mt-0.5">
-                {batches.length} batch{batches.length !== 1 ? "es" : ""}
-              </p>
-            )}
-          </div>
-          <div className="flex gap-2">
-            <Link
-              to="/umuco/batches"
-              className="rounded-md border border-slate-300 px-3 py-1.5 text-sm text-slate-700 bg-white hover:bg-slate-50"
-            >
-              Pending
-            </Link>
-            <button
-              type="button"
-              onClick={load}
-              disabled={loading}
-              className="rounded-md border border-slate-300 px-3 py-1.5 text-sm text-slate-700 bg-white hover:bg-slate-50 disabled:opacity-60"
-            >
-              Refresh
-            </button>
-          </div>
+    <PageShell title="Batch History" institutionName={institutionName}>
+      {/* Toolbar */}
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        {/* Filter tabs */}
+        <div className="flex gap-1.5 bg-white rounded-xl border border-brand-100 p-1">
+          {STATUS_TABS.map((tab) => {
+            const count = tab.key === "all"
+              ? allBatches.length
+              : allBatches.filter((b) => b.status === tab.key).length;
+            return (
+              <button
+                key={tab.key}
+                type="button"
+                onClick={() => setStatusFilter(tab.key)}
+                className={`rounded-lg px-3.5 py-1.5 text-xs font-semibold transition-colors ${
+                  statusFilter === tab.key
+                    ? "bg-brand-500 text-white shadow-sm"
+                    : "text-slate-600 hover:text-brand-600 hover:bg-brand-50"
+                }`}
+              >
+                {tab.label}
+                {!loading && (
+                  <span className={`ml-1.5 ${statusFilter === tab.key ? "opacity-80" : "opacity-50"}`}>
+                    {count}
+                  </span>
+                )}
+              </button>
+            );
+          })}
         </div>
 
-        {error && (
-          <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3">
-            <p className="text-sm text-red-600">{error}</p>
+        <PrimaryButton onClick={load} disabled={loading} variant="outline">
+          {loading ? "Loading…" : "Refresh"}
+        </PrimaryButton>
+      </div>
+
+      {error && <Alert type="error">{error}</Alert>}
+
+      {!loading && allBatches.length > 0 && (
+        <Card className="px-5 py-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-3">
+            <input
+              type="text"
+              value={filters.query}
+              onChange={(event) => setFilters((current) => ({ ...current, query: event.target.value }))}
+              placeholder="Search batch, group, agent, reference"
+              className="rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm text-slate-900 placeholder-slate-400"
+            />
+            <select
+              value={filters.groupId}
+              onChange={(event) => setFilters((current) => ({ ...current, groupId: event.target.value }))}
+              className="rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm text-slate-900"
+            >
+              <option value="">All groups</option>
+              {filterOptions.groups.map((option) => <option key={option.id} value={option.id}>{option.name}</option>)}
+            </select>
+            <select
+              value={filters.agentId}
+              onChange={(event) => setFilters((current) => ({ ...current, agentId: event.target.value }))}
+              className="rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm text-slate-900"
+            >
+              <option value="">All agents</option>
+              {filterOptions.agents.map((option) => <option key={option.id} value={option.id}>{option.name}</option>)}
+            </select>
+            <input
+              type="date"
+              value={filters.dateFrom}
+              onChange={(event) => setFilters((current) => ({ ...current, dateFrom: event.target.value }))}
+              className="rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm text-slate-900"
+            />
+            <input
+              type="date"
+              value={filters.dateTo}
+              onChange={(event) => setFilters((current) => ({ ...current, dateTo: event.target.value }))}
+              className="rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm text-slate-900"
+            />
+          </div>
+        </Card>
+      )}
+
+      <Card>
+        {loading ? (
+          <LoadingState label="Loading history…" />
+        ) : batches.length === 0 ? (
+          <EmptyState
+            title="No batches found"
+            subtitle={statusFilter !== "all" ? `No ${statusFilter} batches to display.` : "No batch history yet."}
+          />
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-brand-100 bg-brand-50 text-left">
+                  <th className="px-5 py-3 text-xs font-semibold uppercase tracking-wide text-brand-700">Group</th>
+                  <th className="px-5 py-3 text-xs font-semibold uppercase tracking-wide text-brand-700">Agent</th>
+                  <th className="px-5 py-3 text-xs font-semibold uppercase tracking-wide text-brand-700 text-right">Amount</th>
+                  <th className="px-5 py-3 text-xs font-semibold uppercase tracking-wide text-brand-700 text-center">Members</th>
+                  <th className="px-5 py-3 text-xs font-semibold uppercase tracking-wide text-brand-700">Status</th>
+                  <th className="px-5 py-3 text-xs font-semibold uppercase tracking-wide text-brand-700">Submitted</th>
+                  <th className="px-5 py-3 text-xs font-semibold uppercase tracking-wide text-brand-700">Decision</th>
+                  <th className="px-5 py-3 text-xs font-semibold uppercase tracking-wide text-brand-700">Notes</th>
+                  <th className="px-5 py-3"></th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {batches.map((b) => {
+                  const decisionTs = b.confirmedAt || b.flaggedAt || null;
+                  return (
+                    <tr key={b.id} className="hover:bg-brand-50/50 transition-colors">
+                      <td className="px-5 py-3 font-semibold text-slate-900">{b.groupName}</td>
+                      <td className="px-5 py-3 text-slate-600">{b.agentName}</td>
+                      <td className="px-5 py-3 text-right font-bold text-brand-700">
+                        {formatBIF(b.totalAmount)}
+                      </td>
+                      <td className="px-5 py-3 text-center text-slate-700">
+                        {Number(b.memberCount || 0)}
+                      </td>
+                      <td className="px-5 py-3">
+                        <StatusBadge status={b.status} />
+                      </td>
+                      <td className="px-5 py-3 text-slate-500 whitespace-nowrap">
+                        {formatDate(b.submittedAt)}
+                      </td>
+                      <td className="px-5 py-3 text-slate-500 whitespace-nowrap">
+                        {formatDate(decisionTs)}
+                      </td>
+                      <td className="px-5 py-3 text-slate-600 max-w-[180px] truncate">
+                        {b.institutionNotes || b.umucoNotes || "—"}
+                      </td>
+                      <td className="px-5 py-3 text-right">
+                        <Link
+                          to={`/umuco/batch/${b.id}`}
+                          className="text-xs font-semibold text-brand-600 hover:text-brand-700 hover:underline"
+                        >
+                          View
+                        </Link>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
           </div>
         )}
-
-        {/* Status filter */}
-        <div className="flex gap-2">
-          {STATUS_TABS.map((tab) => (
-            <button
-              key={tab.key}
-              type="button"
-              onClick={() => setStatusFilter(tab.key)}
-              className={`rounded-md px-3 py-1.5 text-xs font-medium border ${
-                statusFilter === tab.key
-                  ? "border-slate-900 bg-slate-900 text-white"
-                  : "border-slate-300 bg-white text-slate-700 hover:bg-slate-50"
-              }`}
-            >
-              {tab.label}
-              {!loading && tab.key !== "all" && (
-                <span className="ml-1.5 opacity-70">
-                  {allBatches.filter((b) => b.status === tab.key).length}
-                </span>
-              )}
-            </button>
-          ))}
-        </div>
-
-        <section className="rounded-xl border border-slate-200 bg-white shadow-sm overflow-hidden">
-          {loading ? (
-            <div className="px-5 py-12 text-sm text-slate-400 animate-pulse">Loading history…</div>
-          ) : batches.length === 0 ? (
-            <div className="px-5 py-12 text-sm text-slate-500">No batches found.</div>
-          ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b border-slate-200 bg-slate-50 text-left text-xs font-medium uppercase tracking-wide text-slate-500">
-                    <th className="px-5 py-3">Group</th>
-                    <th className="px-5 py-3">Agent</th>
-                    <th className="px-5 py-3 text-right">Amount</th>
-                    <th className="px-5 py-3 text-center">Members</th>
-                    <th className="px-5 py-3">Status</th>
-                    <th className="px-5 py-3">Submitted</th>
-                    <th className="px-5 py-3">Decision</th>
-                    <th className="px-5 py-3">Notes</th>
-                    <th className="px-5 py-3"></th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100">
-                  {batches.map((b) => {
-                    const decisionTs = b.confirmedAt || b.flaggedAt || null;
-                    return (
-                      <tr key={b.id} className="hover:bg-slate-50">
-                        <td className="px-5 py-3 text-slate-900 font-medium">{b.groupName}</td>
-                        <td className="px-5 py-3 text-slate-600">{b.agentName}</td>
-                        <td className="px-5 py-3 text-right font-semibold text-slate-800">
-                          {formatAmount(b.totalAmount)}
-                        </td>
-                        <td className="px-5 py-3 text-center text-slate-700">
-                          {Number(b.memberCount || 0)}
-                        </td>
-                        <td className="px-5 py-3">
-                          <span
-                            className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium capitalize ${
-                              b.status === "confirmed"
-                                ? "bg-emerald-100 text-emerald-700"
-                                : "bg-red-100 text-red-700"
-                            }`}
-                          >
-                            {b.status}
-                          </span>
-                        </td>
-                        <td className="px-5 py-3 text-slate-500 whitespace-nowrap">
-                          {formatDate(b.submittedAt)}
-                        </td>
-                        <td className="px-5 py-3 text-slate-500 whitespace-nowrap">
-                          {formatDate(decisionTs)}
-                        </td>
-                        <td className="px-5 py-3 text-slate-600 max-w-[200px] truncate">
-                          {b.institutionNotes || b.umucoNotes || "—"}
-                        </td>
-                        <td className="px-5 py-3 text-right">
-                          <Link
-                            to={`/umuco/batch/${b.id}`}
-                            className="text-xs text-blue-600 hover:underline"
-                          >
-                            View
-                          </Link>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </section>
-      </div>
-    </main>
+      </Card>
+    </PageShell>
   );
 }

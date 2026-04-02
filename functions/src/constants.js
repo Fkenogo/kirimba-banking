@@ -60,6 +60,7 @@ const LOAN_STATUS = {
 const LOAN_TERMS = {
   DAYS_7: 7,
   DAYS_14: 14,
+  DAYS_21: 21,
   DAYS_30: 30,
 };
 

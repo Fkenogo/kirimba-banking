@@ -4,6 +4,7 @@ const { FieldValue } = require("firebase-admin/firestore");
 const members = require("./src/members");
 const savings = require("./src/savings");
 const loans = require("./src/loans");
+const notifications = require("./src/notifications");
 const scheduledFunctions = require("./src/scheduledFunctions");
 
 if (!admin.apps.length) {
@@ -119,6 +120,8 @@ exports.flagBatch = savings.flagBatch;
 exports.getBatchesForGroup = savings.getBatchesForGroup;
 exports.getAgentLedger = savings.getAgentLedger;
 exports.getPendingWithdrawalRequests = savings.getPendingWithdrawalRequests;
+exports.approveWithdrawal = savings.approveWithdrawal;
+exports.rejectWithdrawal = savings.rejectWithdrawal;
 
 exports.requestLoan = loans.requestLoan;
 exports.disburseLoan = loans.disburseLoan;
@@ -135,12 +138,23 @@ exports.adminMarkLoanDefault = loans.adminMarkLoanDefault;
 
 // Scheduled functions
 exports.deleteExpiredNotifications = scheduledFunctions.deleteExpiredNotifications;
+exports.markNotificationRead = notifications.markNotificationRead;
 
 const agents = require("./src/agents");
 exports.provisionAgent    = agents.provisionAgent;
-exports.assignAgentToGroup = agents.assignAgentToGroup;
+exports.suspendAgent = agents.suspendAgent;
+exports.reactivateAgent = agents.reactivateAgent;
+
 exports.provisionAdmin = agents.provisionAdmin;
 exports.provisionInstitutionUser = agents.provisionInstitutionUser;
+
+const provisioning = require("./src/provisioning");
+exports.createUserInvitation = provisioning.createUserInvitation;
+exports.listUserInvitations = provisioning.listUserInvitations;
+exports.revokeUserInvitation = provisioning.revokeUserInvitation;
+exports.regenerateUserInvitation = provisioning.regenerateUserInvitation;
+exports.getUserInvitationAcceptance = provisioning.getUserInvitationAcceptance;
+exports.acceptUserInvitation = provisioning.acceptUserInvitation;
 
 const groups = require("./src/groups");
 exports.adminSetGroupBorrowPause = groups.adminSetGroupBorrowPause;
@@ -151,6 +165,8 @@ exports.adminUpdateReconciliation = reconciliation.adminUpdateReconciliation;
 exports.requestSettlement = reconciliation.requestSettlement;
 exports.approveSettlement = reconciliation.approveSettlement;
 exports.markSettlementPaid = reconciliation.markSettlementPaid;
+exports.getReconciliationSettlementsConsole = reconciliation.getReconciliationSettlementsConsole;
+exports.getReconciliationSettlementDetail = reconciliation.getReconciliationSettlementDetail;
 
 // Super-admin business oversight
 const superAdmin = require("./src/superAdmin");
@@ -164,7 +180,10 @@ exports.reactivateGroup = superAdmin.reactivateGroup;
 exports.getAdmins = superAdmin.getAdmins;
 exports.suspendAdmin = superAdmin.suspendAdmin;
 exports.reactivateAdmin = superAdmin.reactivateAdmin;
+exports.getUsersRolesConsole = superAdmin.getUsersRolesConsole;
+exports.getAgentsConsole = superAdmin.getAgentsConsole;
 exports.getAuditLog = superAdmin.getAuditLog;
+exports.getInstitutionsConsole = superAdmin.getInstitutionsConsole;
 exports.getInstitutions = superAdmin.getInstitutions;
 exports.createInstitution = superAdmin.createInstitution;
 exports.suspendInstitution = superAdmin.suspendInstitution;
@@ -173,7 +192,15 @@ exports.backfillUmucoInstitution = superAdmin.backfillUmucoInstitution;
 exports.migrateInstitutionUserRoles = superAdmin.migrateInstitutionUserRoles;
 exports.backfillGroupInstitutionIds = superAdmin.backfillGroupInstitutionIds;
 exports.getExecutiveSummary = superAdmin.getExecutiveSummary;
+exports.getAdminDashboardSummary = superAdmin.getAdminDashboardSummary;
+exports.getGroupsGovernanceConsole = superAdmin.getGroupsGovernanceConsole;
+exports.getGroupGovernanceDetail = superAdmin.getGroupGovernanceDetail;
+exports.setGroupGovernanceReviewState = superAdmin.setGroupGovernanceReviewState;
+exports.getDepositsBatchesConsole = superAdmin.getDepositsBatchesConsole;
+exports.getDepositBatchDetail = superAdmin.getDepositBatchDetail;
+exports.queryTransactionsOversight = superAdmin.queryTransactionsOversight;
 exports.getLoanPortfolioSummary = superAdmin.getLoanPortfolioSummary;
+exports.getRiskExceptionsConsole = superAdmin.getRiskExceptionsConsole;
 exports.getExceptions = superAdmin.getExceptions;
 exports.getKirimbaFundOverview = superAdmin.getKirimbaFundOverview;
 exports.seedKirimbaFund = superAdmin.seedKirimbaFund;

@@ -3,60 +3,48 @@ import { useNavigate } from "react-router-dom";
 import { httpsCallable } from "firebase/functions";
 import { db, functions } from "../../services/firebase";
 import { confirmLeaderClaim, loadCurrentGroup } from "./leaderGroupAccess";
+import { PageShell, Card, Alert, PrimaryButton, FormInput, LoadingScreen } from "../../components/ui";
 
 const GROUP_SIZE_THRESHOLD = 12;
-
-const STEP = {
-  IDLE: "idle",
-  SELECT: "select",
-  NAME: "name",
-  CONFIRM: "confirm",
-  DONE: "done",
-};
+const STEP = { IDLE: "idle", SELECT: "select", NAME: "name", CONFIRM: "confirm", DONE: "done" };
 
 export default function GroupSplitScreen({ user }) {
-  const navigate = useNavigate();
-  const [group, setGroup] = useState(null);
-  const [members, setMembers] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
+  const navigate    = useNavigate();
+  const [group,     setGroup]     = useState(null);
+  const [members,   setMembers]   = useState([]);
+  const [loading,   setLoading]   = useState(true);
+  const [error,     setError]     = useState(null);
 
-  const [step, setStep] = useState(STEP.IDLE);
-  const [selectedIds, setSelectedIds] = useState(new Set());
+  const [step,         setStep]         = useState(STEP.IDLE);
+  const [selectedIds,  setSelectedIds]  = useState(new Set());
   const [newGroupName, setNewGroupName] = useState("");
-  const [submitting, setSubmitting] = useState(false);
-  const [submitError, setSubmitError] = useState(null);
-  const [result, setResult] = useState(null);
+  const [submitting,   setSubmitting]   = useState(false);
+  const [submitError,  setSubmitError]  = useState(null);
+  const [result,       setResult]       = useState(null);
 
   useEffect(() => {
     if (!user?.uid) return;
-
     async function load() {
       try {
         const { groupId, group: currentGroup } = await loadCurrentGroup(db, user.uid);
-        if (!groupId || !currentGroup) {
-          setError("You are not in a group.");
-          return;
-        }
+        if (!groupId || !currentGroup) { setError("You are not in a group."); return; }
 
         const hasLeaderClaim = await confirmLeaderClaim(user);
         if (!hasLeaderClaim || currentGroup.leaderId !== user.uid) {
           setError("Only group leaders can split a group.");
           return;
         }
-
         setGroup(currentGroup);
 
         const getGroupMembers = httpsCallable(functions, "getGroupMembers");
-        const membersRes = await getGroupMembers({ groupId });
-        setMembers((membersRes.data?.members || []).filter((m) => m.userId !== user.uid));
+        const res = await getGroupMembers({ groupId });
+        setMembers((res.data?.members || []).filter((m) => m.userId !== user.uid));
       } catch (err) {
         setError(err?.message || "Failed to load split workflow.");
       } finally {
         setLoading(false);
       }
     }
-
     load();
   }, [user?.uid]);
 
@@ -65,22 +53,20 @@ export default function GroupSplitScreen({ user }) {
   function toggleMember(userId) {
     setSelectedIds((prev) => {
       const next = new Set(prev);
-      if (next.has(userId)) next.delete(userId);
-      else next.add(userId);
+      if (next.has(userId)) next.delete(userId); else next.add(userId);
       return next;
     });
   }
 
   async function submitSplit() {
     if (!group?.id) return;
-    setSubmitting(true);
-    setSubmitError(null);
+    setSubmitting(true); setSubmitError(null);
     try {
-      const initiateGroupSplit = httpsCallable(functions, "initiateGroupSplit");
-      const res = await initiateGroupSplit({
-        sourceGroupId: group.id,
-        newGroupName: newGroupName.trim(),
-        memberIdsToMove: [...selectedIds],
+      const fn = httpsCallable(functions, "initiateGroupSplit");
+      const res = await fn({
+        sourceGroupId:    group.id,
+        newGroupName:     newGroupName.trim(),
+        memberIdsToMove:  [...selectedIds],
       });
       setResult(res.data || null);
       setStep(STEP.DONE);
@@ -91,138 +77,231 @@ export default function GroupSplitScreen({ user }) {
     }
   }
 
-  if (loading) return <Centered text="Loading..." />;
-  if (error) return <Centered text={error} error />;
+  if (loading) return <LoadingScreen title="Split Group" backTo="/app/group/manage" backLabel="Back to Manage Group" />;
 
-  if (step === STEP.DONE && result) {
+  /* ─── Error / access denied ─── */
+  if (error) {
     return (
-      <main className="min-h-screen bg-slate-50 flex flex-col items-center justify-center p-6">
-        <div className="w-full max-w-sm space-y-4">
-          <section className="bg-white rounded-2xl border border-slate-200 shadow-sm px-6 py-8 text-center space-y-2">
-            <div className="text-4xl">✓</div>
-            <h1 className="text-xl font-bold text-slate-900">Group Split Complete</h1>
-            <p className="text-sm text-slate-500">{result.movedCount} members moved.</p>
-          </section>
-          <section className="bg-white rounded-2xl border border-slate-200 shadow-sm px-5 py-4">
-            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">New Group Code</p>
-            <p className="text-2xl font-mono font-bold text-blue-700 tracking-widest mt-1">{result.newInviteCode}</p>
-          </section>
-          <button
-            onClick={() => navigate("/app/home")}
-            className="w-full bg-blue-600 hover:bg-blue-700 text-white py-3.5 rounded-xl font-semibold text-sm"
-          >
-            Back to Home
-          </button>
-        </div>
-      </main>
+      <PageShell title="Split Group" showBack backTo="/app/group/manage" backLabel="Back to Manage Group">
+        <Card>
+          <div className="px-5 py-8 text-center space-y-3">
+            <p className="text-sm font-bold text-slate-800">Access Restricted</p>
+            <p className="text-xs text-slate-400">{error}</p>
+          </div>
+        </Card>
+      </PageShell>
     );
   }
 
-  return (
-    <main className="min-h-screen bg-slate-50 pb-12">
-      <header className="bg-white border-b border-slate-200 px-4 py-4">
-        <button onClick={() => navigate(-1)} className="text-sm text-slate-500 hover:text-slate-700 mb-1">← Back</button>
-        <h1 className="text-lg font-semibold text-slate-900">Split Group</h1>
-        <p className="text-xs text-slate-400 mt-0.5">{group?.name}</p>
-      </header>
-
-      <div className="max-w-lg mx-auto px-4 pt-6 space-y-4">
-        {!isLarge && step === STEP.IDLE && (
-          <section className="bg-white rounded-2xl border border-slate-200 shadow-sm px-5 py-5">
-            <p className="text-sm text-slate-600">Group is not large enough to split yet.</p>
-          </section>
-        )}
-
-        {isLarge && step === STEP.IDLE && (
-          <section className="bg-amber-50 border border-amber-200 rounded-2xl px-5 py-4 space-y-3">
-            <p className="text-sm font-semibold text-amber-900">Your group is growing</p>
-            <p className="text-xs text-amber-700">Select members to move into a new group.</p>
-            <button
-              onClick={() => setStep(STEP.SELECT)}
-              className="w-full bg-amber-600 hover:bg-amber-700 text-white py-2.5 rounded-xl text-sm font-semibold"
-            >
-              Start Split
-            </button>
-          </section>
-        )}
-
-        {step === STEP.SELECT && (
-          <section className="bg-white rounded-2xl border border-slate-200 shadow-sm px-5 py-4 space-y-3">
-            <p className="text-sm font-semibold text-slate-800">Select Members to Move</p>
-            {members.length === 0 ? (
-              <p className="text-sm text-slate-500">No members available to move.</p>
-            ) : (
-              <ul className="space-y-2">
-                {members.map((member) => (
-                  <li key={member.userId} className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
-                    <label className="flex items-center gap-3 cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={selectedIds.has(member.userId)}
-                        onChange={() => toggleMember(member.userId)}
-                      />
-                      <div>
-                        <p className="text-sm font-medium text-slate-900">{member.fullName || member.userId}</p>
-                        <p className="text-xs text-slate-500">{member.phone || member.userId}</p>
-                      </div>
-                    </label>
-                  </li>
-                ))}
-              </ul>
+  /* ─── Done ─── */
+  if (step === STEP.DONE && result) {
+    return (
+      <PageShell title="Split Group" showBack backTo="/app/group/manage" backLabel="Back to Manage Group">
+        <Card>
+          <div className="px-5 py-10 text-center space-y-4">
+            <div className="w-16 h-16 bg-brand-100 rounded-2xl flex items-center justify-center mx-auto">
+              <svg className="w-8 h-8 text-brand-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+              </svg>
+            </div>
+            <div>
+              <p className="text-base font-extrabold text-slate-900">Group Split Complete!</p>
+              <p className="text-sm text-slate-500 mt-1.5">{result.movedCount} members moved to the new group.</p>
+            </div>
+            {result.newInviteCode && (
+              <div className="bg-brand-50 rounded-2xl px-5 py-4 text-left">
+                <p className="text-xs font-bold uppercase tracking-widest text-brand-600 mb-1">New Group Code</p>
+                <p className="text-3xl font-mono font-extrabold text-brand-700 tracking-widest">{result.newInviteCode}</p>
+                <p className="text-xs text-slate-400 mt-1">Share this code with the moved members.</p>
+              </div>
             )}
-            <button
+            <PrimaryButton onClick={() => navigate("/app/home")}>Back to Home</PrimaryButton>
+          </div>
+        </Card>
+      </PageShell>
+    );
+  }
+
+  /* ─── Main wizard ─── */
+  return (
+    <PageShell title="Split Group" showBack backTo="/app/group/manage" backLabel="Back to Manage Group">
+
+      {/* Group context banner */}
+      <div className="bg-brand-500 rounded-2xl px-5 py-4 text-white">
+        <p className="text-xs text-brand-200 uppercase tracking-wide">Splitting</p>
+        <p className="text-base font-bold">{group?.name}</p>
+        <p className="text-xs text-brand-200 mt-0.5">{group?.memberCount ?? 0} members</p>
+      </div>
+
+      {/* Not large enough */}
+      {!isLarge && step === STEP.IDLE && (
+        <Card>
+          <div className="px-5 py-6 text-center space-y-3">
+            <div className="w-12 h-12 bg-slate-50 rounded-xl flex items-center justify-center mx-auto">
+              <svg className="w-6 h-6 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+            </div>
+            <p className="text-sm font-bold text-slate-700">Group is not large enough to split</p>
+            <p className="text-xs text-slate-400">
+              A split becomes available once your group has more than {GROUP_SIZE_THRESHOLD} members.
+              Currently: {group?.memberCount ?? 0} members.
+            </p>
+          </div>
+        </Card>
+      )}
+
+      {/* Ready to split — idle */}
+      {isLarge && step === STEP.IDLE && (
+        <Card>
+          <div className="px-5 py-6 space-y-4">
+            <div className="flex items-start gap-3">
+              <div className="w-10 h-10 bg-gold-100 rounded-xl flex items-center justify-center shrink-0">
+                <svg className="w-5 h-5 text-gold-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
+                </svg>
+              </div>
+              <div>
+                <p className="text-sm font-bold text-slate-800">Your group is growing</p>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  With {group?.memberCount} members, you can split into two groups. Select members to move to a new group.
+                </p>
+              </div>
+            </div>
+            <PrimaryButton onClick={() => setStep(STEP.SELECT)}>Start Split</PrimaryButton>
+          </div>
+        </Card>
+      )}
+
+      {/* Step: select members */}
+      {step === STEP.SELECT && (
+        <Card>
+          <div className="px-5 py-4 space-y-3">
+            <p className="text-xs font-bold uppercase tracking-widest text-slate-400">
+              Select Members to Move ({selectedIds.size} selected)
+            </p>
+            {members.length === 0 ? (
+              <p className="text-sm text-slate-400 text-center py-2">No other members available.</p>
+            ) : (
+              <div className="space-y-2">
+                {members.map((member) => (
+                  <label key={member.userId}
+                    className={`flex items-center gap-3 rounded-xl border-2 px-4 py-3 cursor-pointer transition-colors ${
+                      selectedIds.has(member.userId)
+                        ? "border-brand-500 bg-brand-50"
+                        : "border-slate-100 bg-slate-50 hover:border-brand-200"
+                    }`}>
+                    <input
+                      type="checkbox"
+                      checked={selectedIds.has(member.userId)}
+                      onChange={() => toggleMember(member.userId)}
+                      className="w-4 h-4 accent-brand-500 shrink-0"
+                    />
+                    <div className="w-8 h-8 bg-brand-100 rounded-lg flex items-center justify-center shrink-0">
+                      <span className="text-xs font-extrabold text-brand-600">
+                        {String(member.fullName || "?")[0].toUpperCase()}
+                      </span>
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-bold text-slate-800 truncate">{member.fullName || member.userId}</p>
+                      <p className="text-xs text-slate-400">{formatMemberMeta(member)}</p>
+                    </div>
+                  </label>
+                ))}
+              </div>
+            )}
+            <PrimaryButton
               onClick={() => setStep(STEP.NAME)}
               disabled={selectedIds.size === 0}
-              className="w-full bg-blue-600 hover:bg-blue-700 text-white py-2.5 rounded-xl text-sm font-semibold disabled:opacity-40"
             >
-              Continue
-            </button>
-          </section>
-        )}
+              Continue ({selectedIds.size} selected)
+            </PrimaryButton>
+          </div>
+        </Card>
+      )}
 
-        {step === STEP.NAME && (
-          <section className="bg-white rounded-2xl border border-slate-200 shadow-sm px-5 py-4 space-y-3">
-            <p className="text-sm font-semibold text-slate-800">Name New Group</p>
-            <input
+      {/* Step: name new group */}
+      {step === STEP.NAME && (
+        <Card>
+          <div className="px-5 py-5 space-y-4">
+            <p className="text-xs font-bold uppercase tracking-widest text-slate-400">Name the New Group</p>
+            <FormInput
+              label="New Group Name"
               type="text"
               value={newGroupName}
               onChange={(e) => setNewGroupName(e.target.value)}
               placeholder="e.g. Kirimba North"
-              className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm"
             />
-            <button
-              onClick={() => setStep(STEP.CONFIRM)}
-              disabled={!newGroupName.trim()}
-              className="w-full bg-blue-600 hover:bg-blue-700 text-white py-2.5 rounded-xl text-sm font-semibold disabled:opacity-40"
-            >
-              Continue
-            </button>
-          </section>
-        )}
+            <div className="flex gap-3">
+              <button onClick={() => setStep(STEP.SELECT)}
+                className="flex-1 py-3 rounded-2xl border-2 border-slate-200 text-slate-600 font-bold text-sm">
+                Back
+              </button>
+              <PrimaryButton
+                onClick={() => setStep(STEP.CONFIRM)}
+                disabled={!newGroupName.trim()}
+              >
+                Continue
+              </PrimaryButton>
+            </div>
+          </div>
+        </Card>
+      )}
 
-        {step === STEP.CONFIRM && (
-          <section className="bg-white rounded-2xl border border-slate-200 shadow-sm px-5 py-4 space-y-3">
-            <p className="text-sm font-semibold text-slate-800">Confirm Split</p>
-            <p className="text-sm text-slate-600">Move {selectedIds.size} members to <span className="font-medium">{newGroupName}</span>.</p>
-            {submitError ? <p className="text-sm text-red-600">{submitError}</p> : null}
-            <button
-              onClick={submitSplit}
-              disabled={submitting}
-              className="w-full bg-emerald-700 hover:bg-emerald-800 text-white py-2.5 rounded-xl text-sm font-semibold disabled:opacity-60"
-            >
-              {submitting ? "Splitting..." : "Confirm Split"}
-            </button>
-          </section>
-        )}
-      </div>
-    </main>
+      {/* Step: confirm */}
+      {step === STEP.CONFIRM && (
+        <Card>
+          <div className="px-5 py-5 space-y-4">
+            <p className="text-xs font-bold uppercase tracking-widest text-slate-400">Confirm Split</p>
+            <div className="bg-brand-50 rounded-2xl px-4 py-4 space-y-2">
+              <div className="flex justify-between text-sm">
+                <span className="text-slate-500">Members moving</span>
+                <span className="font-bold text-slate-800">{selectedIds.size}</span>
+              </div>
+              <div className="flex justify-between text-sm">
+                <span className="text-slate-500">New group name</span>
+                <span className="font-bold text-slate-800">{newGroupName}</span>
+              </div>
+              <div className="flex justify-between text-sm">
+                <span className="text-slate-500">Remaining in {group?.name}</span>
+                <span className="font-bold text-slate-800">{(group?.memberCount ?? 0) - selectedIds.size}</span>
+              </div>
+            </div>
+
+            {submitError && <Alert type="error">{submitError}</Alert>}
+
+            <div className="flex gap-3">
+              <button onClick={() => setStep(STEP.NAME)}
+                className="flex-1 py-3 rounded-2xl border-2 border-slate-200 text-slate-600 font-bold text-sm">
+                Back
+              </button>
+              <PrimaryButton onClick={submitSplit} loading={submitting}>
+                Confirm Split
+              </PrimaryButton>
+            </div>
+          </div>
+        </Card>
+      )}
+
+    </PageShell>
   );
 }
 
-function Centered({ text, error = false }) {
-  return (
-    <main className="min-h-screen flex items-center justify-center bg-slate-50 p-6">
-      <p className={`text-sm ${error ? "text-red-600" : "text-slate-500"}`}>{text}</p>
-    </main>
-  );
+function formatMemberMeta(member) {
+  const role = member.role === "leader" ? "Leader" : "Member";
+  const joinedAt = member.joinedAt?.toDate
+    ? member.joinedAt.toDate()
+    : typeof member.joinedAt?._seconds === "number"
+      ? new Date(member.joinedAt._seconds * 1000)
+      : typeof member.joinedAt?.seconds === "number"
+        ? new Date(member.joinedAt.seconds * 1000)
+        : member.joinedAt
+          ? new Date(member.joinedAt)
+          : null;
+
+  if (!joinedAt || Number.isNaN(joinedAt.getTime())) {
+    return role;
+  }
+
+  return `${role} · Joined ${joinedAt.toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" })}`;
 }

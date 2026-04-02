@@ -13,6 +13,7 @@ const {
   LEDGER_TYPE,
   LEDGER_STATUS,
 } = require("./constants");
+const { normalizeAgentFeeConfig } = require("./agentPricing");
 const { generateReceiptNo } = require("./utils");
 
 if (!admin.apps.length) {
@@ -94,21 +95,7 @@ async function getActiveMemberAndGroup(userId) {
  */
 async function getFeesConfig(tx) {
   const snap = await tx.get(db.collection("systemConfig").doc("fees"));
-  if (!snap.exists) {
-    return {
-      depositFeeFlat: 0,
-      withdrawFeeFlat: 0,
-      agentCommissionDepositFlat: 0,
-      agentCommissionWithdrawFlat: 0,
-    };
-  }
-  const d = snap.data();
-  return {
-    depositFeeFlat: Math.round(Number(d.depositFeeFlat || 0)),
-    withdrawFeeFlat: Math.round(Number(d.withdrawFeeFlat || 0)),
-    agentCommissionDepositFlat: Math.round(Number(d.agentCommissionDepositFlat || d.agentCommissionRate || 0)),
-    agentCommissionWithdrawFlat: Math.round(Number(d.agentCommissionWithdrawFlat || 0)),
-  };
+  return normalizeAgentFeeConfig(snap.exists ? snap.data() : null);
 }
 
 /**
@@ -141,6 +128,7 @@ function writeLedgerEntries(tx, { feeRef, feeSnap, commissionRef, commissionSnap
       type: LEDGER_TYPE.FEE,
       agentId,
       transactionId,
+      transactionType: txType,
       memberId,
       groupId,
       amount: feeAmount,
@@ -157,6 +145,7 @@ function writeLedgerEntries(tx, { feeRef, feeSnap, commissionRef, commissionSnap
       type: LEDGER_TYPE.COMMISSION,
       agentId,
       transactionId,
+      transactionType: txType,
       memberId,
       groupId,
       amount: commissionAmount,
@@ -655,6 +644,8 @@ exports.recordWithdrawal = functions.https.onCall(async (data, context) => {
       userId,
       walletId: userId,
       groupId: memberState.groupId,
+      institutionId: groupSnap.data().institutionId || null,
+      agentId: context.auth.uid,
       type: TRANSACTION_TYPE.WITHDRAWAL,
       amount,
       status: TRANSACTION_STATUS.CONFIRMED,
@@ -1058,4 +1049,138 @@ exports.getBatchesForGroup = functions.https.onCall(async (data, context) => {
     success: true,
     batches: snap.docs.map((doc) => ({ id: doc.id, ...doc.data() })),
   };
+});
+
+/**
+ * Approve a large-withdrawal request (≥ 50k BIF).
+ * Executes the debit atomically and marks the request approved.
+ */
+exports.approveWithdrawal = functions.https.onCall(async (data, context) => {
+  await requireRole(context, [ROLES.SUPER_ADMIN, ROLES.ADMIN]);
+
+  const requestId = String(data?.requestId || "").trim();
+  const notes = String(data?.notes || "").trim();
+  if (!requestId) {
+    throw httpsError("invalid-argument", "requestId is required.");
+  }
+
+  const requestRef = db.collection("withdrawalRequests").doc(requestId);
+  const requestSnap = await requestRef.get();
+  if (!requestSnap.exists) {
+    throw httpsError("not-found", "Withdrawal request not found.");
+  }
+
+  const req = requestSnap.data();
+  if (req.status !== "pending_approval") {
+    throw httpsError("failed-precondition", `Request is already ${req.status}.`);
+  }
+
+    const { userId, groupId, amount } = req;
+  if (!userId || !groupId || !amount) {
+    throw httpsError("internal", "Withdrawal request has missing fields.");
+  }
+
+  const receiptNo = await generateReceiptNo(db, "TXN");
+  const transactionRef = db.collection("transactions").doc();
+  const walletRef = db.collection("wallets").doc(userId);
+  const groupRef = db.collection("groups").doc(groupId);
+
+  await db.runTransaction(async (tx) => {
+    const [walletSnap, groupSnap, reqFresh] = await Promise.all([
+      tx.get(walletRef),
+      tx.get(groupRef),
+      tx.get(requestRef),
+    ]);
+
+    if (!walletSnap.exists) throw httpsError("not-found", "Member wallet not found.");
+    if (!groupSnap.exists) throw httpsError("failed-precondition", "Group record missing.");
+    if (reqFresh.data().status !== "pending_approval") {
+      throw httpsError("failed-precondition", "Request was already processed.");
+    }
+
+    const wallet = walletSnap.data();
+    const balanceConfirmed = Number(wallet.balanceConfirmed || 0);
+    const balanceLocked = Number(wallet.balanceLocked || 0);
+    const newBalanceConfirmed = balanceConfirmed - amount;
+
+    if ((newBalanceConfirmed - balanceLocked) < MIN_WITHDRAWAL_REMAINING_BALANCE) {
+      throw httpsError(
+        "failed-precondition",
+        `Insufficient balance. Minimum balance of ${MIN_WITHDRAWAL_REMAINING_BALANCE} BIF must remain.`
+      );
+    }
+
+    tx.update(walletRef, {
+      balanceConfirmed: newBalanceConfirmed,
+      availableBalance: newBalanceConfirmed - balanceLocked,
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+
+    tx.set(groupRef, {
+      totalSavings: Math.max(0, Number(groupSnap.data().totalSavings || 0) - amount),
+      updatedAt: FieldValue.serverTimestamp(),
+    }, { merge: true });
+
+    tx.set(transactionRef, {
+      memberId: userId,
+      userId,
+      walletId: userId,
+      groupId,
+      institutionId: groupSnap.data().institutionId || null,
+      agentId: req.requestedBy || null,
+      type: TRANSACTION_TYPE.WITHDRAWAL,
+      amount,
+      status: TRANSACTION_STATUS.CONFIRMED,
+      recordedBy: context.auth.uid,
+      channel: "admin",
+      batchId: null,
+      notes: notes || req.notes || "",
+      receiptNo,
+      balanceBefore: balanceConfirmed,
+      balanceAfter: newBalanceConfirmed,
+      ledgerImpact: -amount,
+      withdrawalRequestId: requestId,
+      createdAt: FieldValue.serverTimestamp(),
+    });
+
+    tx.update(requestRef, {
+      status: "approved",
+      approvedBy: context.auth.uid,
+      approvedAt: FieldValue.serverTimestamp(),
+      transactionId: transactionRef.id,
+      receiptNo,
+    });
+  });
+
+  return { success: true, transactionId: transactionRef.id, receiptNo };
+});
+
+/**
+ * Reject a large-withdrawal request.
+ */
+exports.rejectWithdrawal = functions.https.onCall(async (data, context) => {
+  await requireRole(context, [ROLES.SUPER_ADMIN, ROLES.ADMIN]);
+
+  const requestId = String(data?.requestId || "").trim();
+  const reason = String(data?.reason || "").trim();
+  if (!requestId) throw httpsError("invalid-argument", "requestId is required.");
+  if (!reason) throw httpsError("invalid-argument", "reason is required.");
+
+  const requestRef = db.collection("withdrawalRequests").doc(requestId);
+  const requestSnap = await requestRef.get();
+  if (!requestSnap.exists) throw httpsError("not-found", "Withdrawal request not found.");
+
+  const req = requestSnap.data();
+  if (req.status !== "pending_approval") {
+    throw httpsError("failed-precondition", `Request is already ${req.status}.`);
+  }
+
+  await requestRef.update({
+    status: "rejected",
+    rejectedBy: context.auth.uid,
+    rejectedAt: FieldValue.serverTimestamp(),
+    rejectionReason: reason,
+  });
+
+  return { success: true };
 });

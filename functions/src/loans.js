@@ -12,7 +12,7 @@ const {
   TRANSACTION_TYPE,
   TRANSACTION_STATUS,
 } = require("./constants");
-const { calculateInterest, generateReceiptNo } = require("./utils");
+const { calculateContractedLoanPricing, generateReceiptNo } = require("./utils");
 
 if (!admin.apps.length) {
   admin.initializeApp();
@@ -22,6 +22,28 @@ const db = admin.firestore();
 
 const MAX_GROUP_EXPOSURE_RATIO = 0.7;
 const MAX_BORROWER_CONCENTRATION_RATIO = 0.4;
+const GROUP_INCENTIVE_SHARE_PCT = 0.1;
+const SUPPORTED_LOAN_TERMS = [
+  LOAN_TERMS.DAYS_7,
+  LOAN_TERMS.DAYS_14,
+  LOAN_TERMS.DAYS_21,
+  LOAN_TERMS.DAYS_30,
+];
+const DEFAULT_LOAN_POLICY = {
+  autoApproval: true,
+  maxLoanMultiplier: 1.5,
+  minLoanAmount: 1000,
+  maxLoanAmount: 5000000,
+  defaultTermDays: LOAN_TERMS.DAYS_14,
+  earlySettlementRebateEnabled: false,
+  groupIncentiveSharePct: GROUP_INCENTIVE_SHARE_PCT,
+  termPricing: [
+    { durationDays: LOAN_TERMS.DAYS_7, contractedFeePct: 0.025, minimumFeeFloor: 0, rebateBands: [], active: true },
+    { durationDays: LOAN_TERMS.DAYS_14, contractedFeePct: 0.04, minimumFeeFloor: 0, rebateBands: [], active: true },
+    { durationDays: LOAN_TERMS.DAYS_21, contractedFeePct: 0.055, minimumFeeFloor: 0, rebateBands: [], active: true },
+    { durationDays: LOAN_TERMS.DAYS_30, contractedFeePct: 0.07, minimumFeeFloor: 0, rebateBands: [], active: true },
+  ],
+};
 
 function httpsError(code, message) {
   return new functions.https.HttpsError(code, message);
@@ -110,14 +132,95 @@ async function requireActiveMember(context) {
 
 function requireValidLoanTerm(termDays) {
   const term = Number(termDays);
-  const valid = [LOAN_TERMS.DAYS_7, LOAN_TERMS.DAYS_14, LOAN_TERMS.DAYS_30];
-  if (!valid.includes(term)) {
-    throw httpsError("invalid-argument", "termDays must be 7, 14, or 30.");
+  if (!SUPPORTED_LOAN_TERMS.includes(term)) {
+    throw httpsError("invalid-argument", "termDays must be 7, 14, 21, or 30.");
   }
   return term;
 }
 
-async function executeLoanDisbursement(loanId, actorUid) {
+function normalizeRebateBands(rawBands) {
+  if (!Array.isArray(rawBands)) return [];
+  return rawBands
+    .map((band) => ({
+      milestoneDay: Number(band?.milestoneDay),
+      rebatePct: Number(band?.rebatePct),
+      label: String(band?.label || "").trim() || null,
+    }))
+    .filter((band) =>
+      Number.isFinite(band.milestoneDay) &&
+      band.milestoneDay > 0 &&
+      Number.isFinite(band.rebatePct) &&
+      band.rebatePct >= 0 &&
+      band.rebatePct <= 1
+    )
+    .sort((a, b) => a.milestoneDay - b.milestoneDay);
+}
+
+function normalizeLoanPolicyConfig(rawPolicy = {}) {
+  const base = {
+    ...DEFAULT_LOAN_POLICY,
+    ...rawPolicy,
+  };
+
+  const termPricing = Array.isArray(rawPolicy?.termPricing)
+    ? rawPolicy.termPricing
+    : Array.isArray(rawPolicy?.terms)
+    ? rawPolicy.terms
+    : [];
+
+  const normalizedTermPricing = termPricing
+    .map((term) => ({
+      durationDays: Number(term?.durationDays),
+      contractedFeePct: Number(term?.contractedFeePct),
+      minimumFeeFloor: Math.max(0, Number(term?.minimumFeeFloor || 0)),
+      rebateBands: normalizeRebateBands(term?.rebateBands),
+      active: term?.active !== false,
+    }))
+    .filter((term) =>
+      SUPPORTED_LOAN_TERMS.includes(term.durationDays) &&
+      Number.isFinite(term.contractedFeePct) &&
+      term.contractedFeePct >= 0 &&
+      term.contractedFeePct <= 1
+    )
+    .sort((a, b) => a.durationDays - b.durationDays);
+
+  const effectiveTermPricing =
+    normalizedTermPricing.length === SUPPORTED_LOAN_TERMS.length
+      ? normalizedTermPricing
+      : DEFAULT_LOAN_POLICY.termPricing;
+
+  return {
+    autoApproval: base.autoApproval !== false,
+    maxLoanMultiplier: Number.isFinite(Number(base.maxLoanMultiplier)) ? Number(base.maxLoanMultiplier) : DEFAULT_LOAN_POLICY.maxLoanMultiplier,
+    minLoanAmount: Number.isFinite(Number(base.minLoanAmount)) ? Number(base.minLoanAmount) : DEFAULT_LOAN_POLICY.minLoanAmount,
+    maxLoanAmount: Number.isFinite(Number(base.maxLoanAmount)) ? Number(base.maxLoanAmount) : DEFAULT_LOAN_POLICY.maxLoanAmount,
+    defaultTermDays: SUPPORTED_LOAN_TERMS.includes(Number(base.defaultTermDays)) ? Number(base.defaultTermDays) : DEFAULT_LOAN_POLICY.defaultTermDays,
+    earlySettlementRebateEnabled: base.earlySettlementRebateEnabled === true,
+    groupIncentiveSharePct: Number.isFinite(Number(base.groupIncentiveSharePct))
+      ? Math.max(0, Math.min(1, Number(base.groupIncentiveSharePct)))
+      : DEFAULT_LOAN_POLICY.groupIncentiveSharePct,
+    termPricing: effectiveTermPricing,
+  };
+}
+
+async function getLoanPolicyConfig() {
+  const snap = await db.collection("systemConfig").doc("loanPolicy").get();
+  const policy = normalizeLoanPolicyConfig(snap.exists ? (snap.data() || {}) : {});
+  return {
+    ...policy,
+    source: snap.exists ? "systemConfig" : "default_fallback",
+  };
+}
+
+function getTermPricingConfig(policy, termDays) {
+  const term = policy.termPricing.find((item) => item.durationDays === termDays && item.active !== false);
+  if (!term) {
+    throw httpsError("failed-precondition", `Loan term ${termDays} days is not active in the pricing policy.`);
+  }
+  return term;
+}
+
+async function executeLoanDisbursement(loanId, actorUid, channel = "admin_console") {
   const loanRef = db.collection("loans").doc(loanId);
   const transactionRef = db.collection("transactions").doc();
   const receiptNo = await generateReceiptNo(db, "TXN");
@@ -216,11 +319,12 @@ async function executeLoanDisbursement(loanId, actorUid) {
       userId: loan.userId,
       walletId: loan.userId,
       groupId: loan.groupId,
+      agentId: channel === "agent" ? actorUid : null,
       type: TRANSACTION_TYPE.LOAN_DISBURSE,
       amount,
       status: TRANSACTION_STATUS.CONFIRMED,
       recordedBy: actorUid,
-      channel: "admin_console",
+      channel,
       batchId: null,
       notes: "Loan disbursed via operations console",
       receiptNo,
@@ -279,18 +383,48 @@ async function executeLoanRepayment(loanId, amount, actorUid, channel) {
 
     const wallet = walletSnap.data();
     const fund = fundSnap.data();
-    const paidAmount = Number(loan.paidAmount || 0) + amount;
+    const previousPaidAmount = Number(loan.paidAmount || 0);
+    const paidAmount = previousPaidAmount + amount;
     const nextRemainingDue = Math.max(0, remainingDue - amount);
     const fullyRepaid = nextRemainingDue <= 0;
 
-    const deployedFund = Math.max(0, Number(fund.deployedFund || 0) - amount);
-    const availableFund = Number(fund.availableFund || 0) + amount;
+    const contractedFeeAmount = Math.max(
+      0,
+      Number(
+        loan.contractedFeeAmount ??
+          loan.interestAmount ??
+          Math.max(0, Number(loan.totalDue || 0) - Number(loan.amount || 0))
+      )
+    );
+    const principalAmount = Math.max(0, Number(loan.amount || 0));
+    const principalRepaidBefore = Math.min(Number(loan.principalRepaidAmount || previousPaidAmount || 0), principalAmount);
+    const principalOutstandingBefore = Math.max(
+      0,
+      Number(loan.principalOutstandingAmount ?? (principalAmount - principalRepaidBefore))
+    );
+    const principalPayment = Math.min(amount, principalOutstandingBefore);
+    const feePayment = Math.max(0, amount - principalPayment);
+    const principalRepaidAmount = principalRepaidBefore + principalPayment;
+    const principalOutstandingAmount = Math.max(0, principalOutstandingBefore - principalPayment);
+    const feeCollectedBefore = Math.max(0, Number(loan.feeCollectedAmount || Math.max(0, previousPaidAmount - principalAmount)));
+    const feeCollectedAmount = feeCollectedBefore + feePayment;
+    const groupIncentiveSharePct = Number.isFinite(Number(loan.groupIncentiveSharePct))
+      ? Number(loan.groupIncentiveSharePct)
+      : GROUP_INCENTIVE_SHARE_PCT;
+    const incentiveAccruedThisPayment = Math.round(feePayment * groupIncentiveSharePct);
+    const netFeeIncomeThisPayment = Math.max(0, feePayment - incentiveAccruedThisPayment);
+    const deployedFund = Math.max(0, Number(fund.deployedFund || 0) - principalPayment);
+    const availableFund = Number(fund.availableFund || 0) + principalPayment + netFeeIncomeThisPayment;
 
     tx.set(
       loanRef,
       {
         paidAmount,
         remainingDue: nextRemainingDue,
+        principalRepaidAmount,
+        principalOutstandingAmount,
+        feeCollectedAmount,
+        groupIncentiveAccruedAmount: FieldValue.increment(incentiveAccruedThisPayment),
         status: fullyRepaid ? LOAN_STATUS.REPAID : LOAN_STATUS.ACTIVE,
         repaidAt: fullyRepaid ? FieldValue.serverTimestamp() : null,
         updatedAt: FieldValue.serverTimestamp(),
@@ -299,7 +433,6 @@ async function executeLoanRepayment(loanId, amount, actorUid, channel) {
     );
 
     if (fullyRepaid) {
-      const principalAmount = Number(loan.amount || 0);
       const newBalanceLocked = Math.max(0, Number(wallet.balanceLocked || 0) - principalAmount);
       const newAvailableBalance = Number(wallet.balanceConfirmed || 0) - newBalanceLocked;
       tx.update(walletRef, {
@@ -312,12 +445,21 @@ async function executeLoanRepayment(loanId, amount, actorUid, channel) {
         tx.set(
           groupRef,
           {
-            totalLoansOutstanding: FieldValue.increment(-principalAmount),
+            totalLoansOutstanding: FieldValue.increment(-principalPayment),
             updatedAt: FieldValue.serverTimestamp(),
           },
           { merge: true }
         );
       }
+    } else if (groupRef && principalPayment > 0) {
+      tx.set(
+        groupRef,
+        {
+          totalLoansOutstanding: FieldValue.increment(-principalPayment),
+          updatedAt: FieldValue.serverTimestamp(),
+        },
+        { merge: true }
+      );
     }
 
     tx.set(
@@ -325,7 +467,10 @@ async function executeLoanRepayment(loanId, amount, actorUid, channel) {
       {
         deployedFund,
         availableFund,
-        repaidReturned: FieldValue.increment(amount),
+        repaidReturned: FieldValue.increment(principalPayment),
+        feeIncomeCollected: FieldValue.increment(feePayment),
+        retainedFeeIncome: FieldValue.increment(netFeeIncomeThisPayment),
+        groupIncentiveAccrued: FieldValue.increment(incentiveAccruedThisPayment),
         lastUpdated: FieldValue.serverTimestamp(),
         updatedBy: actorUid,
       },
@@ -345,6 +490,49 @@ async function executeLoanRepayment(loanId, amount, actorUid, channel) {
       createdAt: FieldValue.serverTimestamp(),
     });
 
+    if (feePayment > 0) {
+      const feeLedgerRef = db.collection("fundLedger").doc();
+      tx.set(feeLedgerRef, {
+        type: "lending_fee_income",
+        amount: feePayment,
+        beforeBalance: Number(fund.availableFund || 0) + principalPayment,
+        afterBalance: availableFund,
+        notes: `Loan fee collected: ${loanId}`,
+        actorId: actorUid,
+        actorRole: null,
+        loanId,
+        createdAt: FieldValue.serverTimestamp(),
+      });
+    }
+
+    if (incentiveAccruedThisPayment > 0 && loan.groupId) {
+      const groupIncentiveLedgerRef = db.collection("groupIncentiveLedger").doc();
+      tx.set(groupIncentiveLedgerRef, {
+        type: "loan_fee_share_accrual",
+        groupId: loan.groupId,
+        loanId,
+        borrowerId: loan.userId,
+        amount: incentiveAccruedThisPayment,
+        sourceFeeAmount: feePayment,
+        sharePct: groupIncentiveSharePct,
+        distributionStatus: "accrued",
+        createdAt: FieldValue.serverTimestamp(),
+        actorId: actorUid,
+      });
+      if (groupRef) {
+        tx.set(
+          groupRef,
+          {
+            incentivePoolAccrued: FieldValue.increment(incentiveAccruedThisPayment),
+            incentivePoolUndistributed: FieldValue.increment(incentiveAccruedThisPayment),
+            lastIncentiveAccruedAt: FieldValue.serverTimestamp(),
+            updatedAt: FieldValue.serverTimestamp(),
+          },
+          { merge: true }
+        );
+      }
+    }
+
     const balanceBeforeRepay = Number(wallet.balanceConfirmed || 0);
 
     tx.set(transactionRef, {
@@ -352,6 +540,7 @@ async function executeLoanRepayment(loanId, amount, actorUid, channel) {
       userId: loan.userId,
       walletId: loan.userId,
       groupId: loan.groupId,
+      agentId: channel === "agent" ? actorUid : null,
       type: TRANSACTION_TYPE.LOAN_REPAY,
       amount,
       status: TRANSACTION_STATUS.CONFIRMED,
@@ -375,6 +564,9 @@ async function executeLoanRepayment(loanId, amount, actorUid, channel) {
       status: fullyRepaid ? LOAN_STATUS.REPAID : LOAN_STATUS.ACTIVE,
       remainingDue: nextRemainingDue,
       paidAmount,
+      principalPayment,
+      feePayment,
+      incentiveAccruedThisPayment,
     };
   });
 
@@ -408,7 +600,13 @@ async function executeLoanDefault(loanId, actorUid) {
     );
 
     if (loan.groupId) {
-      const principalOutstanding = Number(loan.amount || loan.remainingDue || 0);
+      const principalOutstanding = Math.max(
+        0,
+        Number(
+          loan.principalOutstandingAmount ??
+            Math.max(0, Number(loan.amount || 0) - Number(loan.principalRepaidAmount || loan.paidAmount || 0))
+        )
+      );
       if (principalOutstanding > 0) {
         tx.set(
           db.collection("groups").doc(loan.groupId),
@@ -422,7 +620,13 @@ async function executeLoanDefault(loanId, actorUid) {
     }
 
     // Move defaulted amount from deployedFund → defaultedExposure
-    const defaultAmount = Number(loan.remainingDue || loan.amount || 0);
+    const defaultAmount = Math.max(
+      0,
+      Number(
+        loan.principalOutstandingAmount ??
+          Math.max(0, Number(loan.amount || 0) - Number(loan.principalRepaidAmount || loan.paidAmount || 0))
+      )
+    );
     if (defaultAmount > 0 && fundSnap.exists) {
       const fund = fundSnap.data();
       tx.set(
@@ -477,7 +681,7 @@ exports.requestLoan = functions.https.onCall(async (data, context) => {
     throw httpsError("invalid-argument", "purpose is required.");
   }
 
-  const [activeLoanSnap, fundSnap, walletSnap, groupSnap, groupActiveLoansSnap] = await Promise.all([
+  const [activeLoanSnap, fundSnap, walletSnap, groupSnap, groupActiveLoansSnap, loanPolicy] = await Promise.all([
     db
       .collection("loans")
       .where("userId", "==", uid)
@@ -492,6 +696,7 @@ exports.requestLoan = functions.https.onCall(async (data, context) => {
       .where("groupId", "==", groupId)
       .where("status", "in", [LOAN_STATUS.PENDING, LOAN_STATUS.ACTIVE])
       .get(),
+    getLoanPolicyConfig(),
   ]);
 
   if (!walletSnap.exists) {
@@ -544,6 +749,14 @@ exports.requestLoan = functions.https.onCall(async (data, context) => {
   // ─────────────────────────────────────────────────────────────────────────
 
   const wallet = walletSnap.data();
+  const minLoanAmount = Math.max(0, Number(loanPolicy.minLoanAmount || 0));
+  const maxLoanAmount = Math.max(minLoanAmount, Number(loanPolicy.maxLoanAmount || 0));
+  if (amount < minLoanAmount) {
+    throw httpsError("failed-precondition", `Minimum loan amount is ${minLoanAmount} BIF.`);
+  }
+  if (maxLoanAmount > 0 && amount > maxLoanAmount) {
+    throw httpsError("failed-precondition", `Maximum loan amount is ${maxLoanAmount} BIF.`);
+  }
 
   const group = groupSnap.exists ? groupSnap.data() : {};
   const groupTotalSavings = Number(group.totalSavings || 0);
@@ -576,7 +789,7 @@ exports.requestLoan = functions.https.onCall(async (data, context) => {
   // This is the member's true borrowing capacity, distinct from liquid available balance.
   const balanceConfirmed = Number(wallet.balanceConfirmed || 0);
   const balanceLocked = Number(wallet.balanceLocked || 0);
-  const memberCreditLimit = Math.max(0, balanceConfirmed * 1.5 - balanceLocked);
+  const memberCreditLimit = Math.max(0, balanceConfirmed * Number(loanPolicy.maxLoanMultiplier || 1.5) - balanceLocked);
 
   let rejectionReason = "";
   if (amount > memberCreditLimit) {
@@ -589,7 +802,8 @@ exports.requestLoan = functions.https.onCall(async (data, context) => {
     rejectionReason = "Member account is not active.";
   }
 
-  const { rate, interestAmount, totalDue } = calculateInterest(amount, termDays);
+  const termPricing = getTermPricingConfig(loanPolicy, termDays);
+  const { contractedFeePct, contractedFeeAmount, totalDue } = calculateContractedLoanPricing(amount, termPricing);
   const dueDate = Timestamp.fromDate(
     new Date(Date.now() + termDays * 24 * 60 * 60 * 1000)
   );
@@ -601,14 +815,26 @@ exports.requestLoan = functions.https.onCall(async (data, context) => {
       userId: uid,
       groupId,
       amount,
-      interestRate: rate,
-      interestAmount,
+      contractedFeePct,
+      contractedFeeAmount,
+      interestRate: contractedFeePct,
+      interestAmount: contractedFeeAmount,
       totalDue,
       termDays,
+      pricingSource: loanPolicy.source,
+      pricingModel: "contracted_term_fee",
+      rebatePolicyEnabled: loanPolicy.earlySettlementRebateEnabled === true,
+      rebateBands: termPricing.rebateBands || [],
+      principalOutstandingAmount: amount,
+      principalRepaidAmount: 0,
+      feeCollectedAmount: 0,
+      groupIncentiveSharePct: Number(loanPolicy.groupIncentiveSharePct || GROUP_INCENTIVE_SHARE_PCT),
+      groupIncentiveAccruedAmount: 0,
       dueDate,
       status: LOAN_STATUS.REJECTED,
       rejectionReason,
-      approvalType: "auto",
+      approvalMode: "auto_policy",
+      approvalStatus: "not_required",
       disbursedBy: null,
       disbursedAt: null,
       paidAmount: 0,
@@ -627,14 +853,26 @@ exports.requestLoan = functions.https.onCall(async (data, context) => {
     userId: uid,
     groupId,
     amount,
-    interestRate: rate,
-    interestAmount,
+    contractedFeePct,
+    contractedFeeAmount,
+    interestRate: contractedFeePct,
+    interestAmount: contractedFeeAmount,
     totalDue,
     termDays,
+    pricingSource: loanPolicy.source,
+    pricingModel: "contracted_term_fee",
+    rebatePolicyEnabled: loanPolicy.earlySettlementRebateEnabled === true,
+    rebateBands: termPricing.rebateBands || [],
+    principalOutstandingAmount: amount,
+    principalRepaidAmount: 0,
+    feeCollectedAmount: 0,
+    groupIncentiveSharePct: Number(loanPolicy.groupIncentiveSharePct || GROUP_INCENTIVE_SHARE_PCT),
+    groupIncentiveAccruedAmount: 0,
     dueDate,
     status: LOAN_STATUS.PENDING,
     rejectionReason: null,
-    approvalType: "auto",
+    approvalMode: "auto_policy",
+    approvalStatus: "not_required",
     disbursedBy: null,
     disbursedAt: null,
     paidAmount: 0,
@@ -648,7 +886,8 @@ exports.requestLoan = functions.https.onCall(async (data, context) => {
     approved: true,
     loanId: loanRef.id,
     amount,
-    interestAmount,
+    interestAmount: contractedFeeAmount,
+    contractedFeeAmount,
     totalDue,
     dueDate,
     termDays,
@@ -662,7 +901,7 @@ exports.disburseLoan = functions.https.onCall(async (data, context) => {
   if (!loanId) {
     throw httpsError("invalid-argument", "loanId is required.");
   }
-  const result = await executeLoanDisbursement(loanId, context.auth.uid);
+  const result = await executeLoanDisbursement(loanId, context.auth.uid, "agent");
   await writeAuditLog(context.auth.uid, actorRole, "loan_disbursed", "loan", loanId, { amount: result.amount, receiptNo: result.receiptNo });
   return result;
 });
@@ -800,34 +1039,7 @@ exports.getLoanDetails = functions.https.onCall(async (data, context) => {
 
 exports.approveLoan = functions.https.onCall(async (data, context) => {
   await requireRole(context, [ROLES.ADMIN, ROLES.SUPER_ADMIN, ROLES.FINANCE]);
-
-  const loanId = String(data?.loanId || "").trim();
-  if (!loanId) {
-    throw httpsError("invalid-argument", "loanId is required.");
-  }
-
-  const loanRef = db.collection("loans").doc(loanId);
-  const loanSnap = await loanRef.get();
-  if (!loanSnap.exists) {
-    throw httpsError("not-found", "Loan not found.");
-  }
-
-  const loan = loanSnap.data() || {};
-  if (loan.status !== LOAN_STATUS.PENDING) {
-    throw httpsError("failed-precondition", "Only pending loans can be approved.");
-  }
-
-  await loanRef.set(
-    {
-      approvedAt: FieldValue.serverTimestamp(),
-      approvedBy: context.auth.uid,
-      approvalStatus: "approved",
-      updatedAt: FieldValue.serverTimestamp(),
-    },
-    { merge: true }
-  );
-
-  return { success: true, loanId, status: LOAN_STATUS.PENDING, approvalStatus: "approved" };
+  throw httpsError("failed-precondition", "Manual loan approval is retired. Eligible loans are created as auto-approved by policy.");
 });
 
 exports.adminDisburseLoan = functions.https.onCall(async (data, context) => {
@@ -838,7 +1050,7 @@ exports.adminDisburseLoan = functions.https.onCall(async (data, context) => {
     throw httpsError("invalid-argument", "loanId is required.");
   }
 
-  const result = await executeLoanDisbursement(loanId, context.auth.uid);
+  const result = await executeLoanDisbursement(loanId, context.auth.uid, "admin_console");
   await writeAuditLog(context.auth.uid, actorRole, "loan_disbursed_admin", "loan", loanId, { amount: result.amount, receiptNo: result.receiptNo });
   return result;
 });
@@ -892,8 +1104,13 @@ exports.markLoanDefaulted = functions.pubsub
     overdue.forEach((loanDoc) => {
       const loan = loanDoc.data();
       const groupId = loan.groupId || null;
-      // Exposure accounting uses principal-based logic (same as disburse + full-repay flow).
-      const principalOutstanding = Number(loan.amount || loan.remainingDue || 0);
+      const principalOutstanding = Math.max(
+        0,
+        Number(
+          loan.principalOutstandingAmount ??
+            Math.max(0, Number(loan.amount || 0) - Number(loan.principalRepaidAmount || loan.paidAmount || 0))
+        )
+      );
 
       batch.set(
         loanDoc.ref,
@@ -934,7 +1151,15 @@ exports.markLoanDefaulted = functions.pubsub
 
     // Update kirimbaFund: move total defaulted principal from deployedFund → defaultedExposure
     const totalDefaultedAmount = overdue.reduce((sum, doc) => {
-      return sum + Number(doc.data().remainingDue || doc.data().amount || 0);
+      const loan = doc.data() || {};
+      const principalOutstanding = Math.max(
+        0,
+        Number(
+          loan.principalOutstandingAmount ??
+            Math.max(0, Number(loan.amount || 0) - Number(loan.principalRepaidAmount || loan.paidAmount || 0))
+        )
+      );
+      return sum + principalOutstanding;
     }, 0);
     if (totalDefaultedAmount > 0) {
       batch.set(

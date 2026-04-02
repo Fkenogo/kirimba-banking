@@ -86,14 +86,14 @@ export default function LoansDashboardScreen() {
   const currentRows = useMemo(() => loansByTab[activeTab] || [], [loansByTab, activeTab]);
 
   return (
-    <main className="min-h-screen bg-slate-50 p-6">
+    <main className="px-8 py-7 bg-brand-50">
       <div className="mx-auto max-w-6xl space-y-4">
         <div className="flex items-center justify-between gap-3">
           <div>
             <button
               type="button"
               onClick={() => navigate("/admin/dashboard")}
-              className="mb-1 flex items-center gap-1 text-xs text-slate-500 hover:text-slate-700"
+              className="mb-1 flex items-center gap-1 text-xs font-medium text-brand-600 hover:text-brand-700"
             >
               ← Back to Dashboard
             </button>
@@ -104,14 +104,14 @@ export default function LoansDashboardScreen() {
             type="button"
             onClick={load}
             disabled={loading}
-            className="rounded-md border border-slate-300 px-3 py-1.5 text-sm text-slate-700 bg-white hover:bg-slate-50 disabled:opacity-60"
+            className="rounded-md border border-slate-300 px-3 py-1.5 text-sm text-slate-700 bg-white hover:bg-brand-50 disabled:opacity-60"
           >
             Refresh
           </button>
         </div>
 
         {error && (
-          <section className="rounded-lg border border-red-200 bg-red-50 px-4 py-3">
+          <section className="rounded-xl border border-red-200 bg-red-50 px-4 py-3">
             <p className="text-sm text-red-700">{error}</p>
           </section>
         )}
@@ -124,8 +124,8 @@ export default function LoansDashboardScreen() {
           <MetricCard label="Outstanding" value={formatAmount(summary.activeOutstandingBIF)} tone="blue" />
         </section>
 
-        <section className="rounded-xl border border-slate-200 bg-white shadow-sm overflow-hidden">
-          <div className="px-4 pt-4 pb-2 border-b border-slate-100">
+        <section className="rounded-2xl border border-brand-100 bg-white shadow-card overflow-hidden">
+          <div className="px-4 pt-4 pb-2 border-b border-brand-100">
             <div className="flex flex-wrap gap-2">
               {TABS.map((tab) => (
                 <button
@@ -134,8 +134,8 @@ export default function LoansDashboardScreen() {
                   onClick={() => setActiveTab(tab.key)}
                   className={`rounded-md px-3 py-1.5 text-xs font-medium border ${
                     activeTab === tab.key
-                      ? "border-slate-900 bg-slate-900 text-white"
-                      : "border-slate-300 bg-white text-slate-700 hover:bg-slate-50"
+                      ? "border-slate-900 bg-brand-500 text-white"
+                      : "border-slate-300 bg-white text-slate-700 hover:bg-brand-50"
                   }`}
                 >
                   {tab.label}
@@ -152,7 +152,7 @@ export default function LoansDashboardScreen() {
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
                 <thead>
-                  <tr className="border-b border-slate-200 bg-slate-50 text-left text-xs font-medium uppercase tracking-wide text-slate-500">
+                  <tr className="border-b border-slate-200 bg-brand-50 text-left text-xs font-semibold uppercase tracking-wide text-brand-700">
                     <th className="px-4 py-3">Loan</th>
                     <th className="px-4 py-3">Member</th>
                     <th className="px-4 py-3">Group</th>
@@ -163,7 +163,7 @@ export default function LoansDashboardScreen() {
                     <th className="px-4 py-3"></th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-slate-100">
+                <tbody className="divide-y divide-brand-50">
                   {currentRows.map((loan) => (
                     <tr key={loan.id}>
                       <td className="px-4 py-3 font-mono text-xs text-blue-700">{loan.id.slice(0, 8)}…</td>
@@ -176,7 +176,7 @@ export default function LoansDashboardScreen() {
                       <td className="px-4 py-3 text-right">
                         <Link
                           to={`/admin/loans/${loan.id}`}
-                          className="rounded-md bg-slate-900 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-black"
+                          className="rounded-md bg-brand-500 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-brand-700"
                         >
                           Open
                         </Link>

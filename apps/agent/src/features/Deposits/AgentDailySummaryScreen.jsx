@@ -1,72 +1,101 @@
-import { useEffect, useState } from "react";
-import { collection, getDocs, query, Timestamp, where } from "firebase/firestore";
+import { useEffect, useMemo, useState } from "react";
+import { useNavigate } from "react-router-dom";
+import { collection, getDocs, query, where } from "firebase/firestore";
 import { httpsCallable } from "firebase/functions";
 import { db, functions } from "../../services/firebase";
 import { getOfflineDeposits } from "../../services/offlineDeposits";
-import { onPendingCountChange, getPendingCount } from "../../services/depositSyncService";
+import { onPendingCountChange } from "../../services/depositSyncService";
+import { PageShell, Card, SectionLabel, Alert, EmptyState } from "../../components/ui";
+import { buildAgentActivityFeed, dayBoundsMs, todayISO, toMillis } from "../../utils/agentFinance";
 
-function startOfToday() {
-  const d = new Date();
-  d.setHours(0, 0, 0, 0);
-  return Timestamp.fromDate(d);
+function shiftISODate(dateStr, deltaDays) {
+  const next = new Date(`${dateStr}T00:00:00`);
+  next.setDate(next.getDate() + deltaDays);
+  return `${next.getFullYear()}-${String(next.getMonth() + 1).padStart(2, "0")}-${String(next.getDate()).padStart(2, "0")}`;
 }
+
+function formatDateHeading(dateStr) {
+  const [year, month, day] = dateStr.split("-").map(Number);
+  return new Date(year, month - 1, day).toLocaleDateString([], {
+    weekday: "long",
+    month: "long",
+    day: "numeric",
+    year: "numeric",
+  });
+}
+
+function formatDateCompact(dateStr) {
+  const [year, month, day] = dateStr.split("-").map(Number);
+  return new Date(year, month - 1, day).toLocaleDateString([], {
+    month: "short",
+    day: "numeric",
+  });
+}
+
+function fmt(n) { return Number(n || 0).toLocaleString(); }
 
 function formatTime(ts) {
   if (!ts) return "—";
-  const date = ts._seconds ? new Date(ts._seconds * 1000) : ts.toDate ? ts.toDate() : new Date(ts);
-  return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-}
-
-function formatAmount(n) {
-  return Number(n).toLocaleString();
+  const d = ts._seconds ? new Date(ts._seconds * 1000) : ts?.toDate ? ts.toDate() : new Date(ts);
+  return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
 export default function AgentDailySummaryScreen({ user }) {
-  const [deposits, setDeposits] = useState([]);
-  const [offlineDeposits, setOfflineDeposits] = useState([]);
+  const navigate = useNavigate();
+  const [selectedDate, setSelectedDate] = useState(todayISO);
+  const [transactions, setTransactions] = useState([]);
+  const [allOfflineDeposits, setAllOfflineDeposits] = useState([]);
   const [batches, setBatches] = useState([]);
-  const [pendingCount, setPendingCount] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-  const [submittingGroup, setSubmittingGroup] = useState(null); // groupId being submitted
+  const [submittingGroup, setSubmittingGroup] = useState(null);
   const [submitError, setSubmitError] = useState(null);
-  const [submitSuccess, setSubmitSuccess] = useState(null); // { groupId, batchId }
+  const [submitSuccess, setSubmitSuccess] = useState(null);
 
-  async function loadDeposits() {
+  const today = todayISO();
+  const isTodaySelected = selectedDate === today;
+  const canMoveForward = selectedDate < today;
+  const dateHeading = formatDateHeading(selectedDate);
+  const dateCompact = formatDateCompact(selectedDate);
+
+  async function loadOfflineActivity() {
+    if (!user?.uid) return;
+    try {
+      const all = await getOfflineDeposits();
+      setAllOfflineDeposits(all.filter((deposit) => deposit.agentId === user.uid));
+    } catch {}
+  }
+
+  async function loadActivity() {
     if (!user?.uid) return;
     setLoading(true);
     setError(null);
     try {
-      const todayStart = startOfToday();
-
-      // Composite index required: agentId ASC + type ASC + createdAt ASC
       const [txSnap, batchSnap] = await Promise.all([
-        getDocs(query(
-          collection(db, "transactions"),
-          where("agentId", "==", user.uid),
-          where("type", "==", "deposit"),
-          where("createdAt", ">=", todayStart)
-        )),
-        // Single-field query — no composite index required
-        getDocs(query(
-          collection(db, "depositBatches"),
-          where("agentId", "==", user.uid)
-        )),
+        getDocs(query(collection(db, "transactions"), where("agentId", "==", user.uid))),
+        getDocs(query(collection(db, "depositBatches"), where("agentId", "==", user.uid))),
       ]);
 
-      const rows = txSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
-      rows.sort((a, b) => (b.createdAt?.toMillis?.() ?? 0) - (a.createdAt?.toMillis?.() ?? 0));
-      setDeposits(rows);
+      const { startMs, endMs } = dayBoundsMs(selectedDate);
+      const nextTransactions = txSnap.docs
+        .map((docSnap) => ({ id: docSnap.id, ...docSnap.data() }))
+        .filter((row) => {
+          const createdAtMs = toMillis(row.createdAt);
+          return createdAtMs >= startMs && createdAtMs < endMs;
+        })
+        .sort((a, b) => toMillis(b.createdAt) - toMillis(a.createdAt));
+      setTransactions(nextTransactions);
 
-      // Filter batches to today client-side (avoids composite index)
-      const todayMs = todayStart.toMillis();
-      const todayBatches = batchSnap.docs
-        .map((d) => ({ id: d.id, ...d.data() }))
-        .filter((b) => (b.submittedAt?.toMillis?.() ?? 0) >= todayMs);
-      todayBatches.sort((a, b) => (b.submittedAt?.toMillis?.() ?? 0) - (a.submittedAt?.toMillis?.() ?? 0));
-      setBatches(todayBatches);
+      const nextBatches = batchSnap.docs
+        .map((docSnap) => ({ id: docSnap.id, ...docSnap.data() }))
+        .filter((batch) => {
+          const activityMs = toMillis(batch.submittedAt) || toMillis(batch.createdAt);
+          return activityMs >= startMs && activityMs < endMs;
+        });
+      nextBatches.sort((a, b) => (toMillis(b.submittedAt) || toMillis(b.createdAt)) - (toMillis(a.submittedAt) || toMillis(a.createdAt)));
+      setBatches(nextBatches);
     } catch (err) {
-      setError(err.message || "Failed to load deposits.");
+      setError(err.message || "Failed to load activity data.");
     } finally {
       setLoading(false);
     }
@@ -81,7 +110,7 @@ export default function AgentDailySummaryScreen({ user }) {
       const token = `${groupId}_${user.uid}_${Date.now()}_${Math.random().toString(36).slice(2)}`;
       const result = await submitBatch({ groupId, transactionIds: txIds, idempotencyToken: token });
       setSubmitSuccess({ groupId, batchId: result.data.batchId });
-      await loadDeposits();
+      await loadActivity();
     } catch (err) {
       setSubmitError(err.message || "Failed to submit batch.");
     } finally {
@@ -89,297 +118,494 @@ export default function AgentDailySummaryScreen({ user }) {
     }
   }
 
-  // Load Firestore deposits for today
   useEffect(() => {
-    loadDeposits();
+    loadActivity();
+  }, [user?.uid, selectedDate]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    loadOfflineActivity();
   }, [user?.uid]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Load offline (unsynced) deposits for this agent
   useEffect(() => {
-    async function load() {
-      try {
-        const all = await getOfflineDeposits();
-        const mine = all.filter((d) => d.agentId === user?.uid);
-        setOfflineDeposits(mine);
-      } catch {
-        // Non-critical — offline deposits may be unavailable
-      }
-    }
-    load();
-  }, [user?.uid]);
+    return onPendingCountChange(() => {
+      loadOfflineActivity();
+    });
+  }, [user?.uid]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Subscribe to sync count badge
-  useEffect(() => {
-    getPendingCount().then(setPendingCount);
-    return onPendingCountChange(setPendingCount);
-  }, []);
+  const offlineDeposits = useMemo(() => {
+    const { startMs, endMs } = dayBoundsMs(selectedDate);
+    return allOfflineDeposits
+      .filter((deposit) => {
+        const createdAtMs = toMillis(deposit.createdAt);
+        return createdAtMs >= startMs && createdAtMs < endMs;
+      })
+      .sort((a, b) => toMillis(b.createdAt) - toMillis(a.createdAt));
+  }, [allOfflineDeposits, selectedDate]);
 
-  const onlineTotal = deposits.reduce((sum, d) => sum + Number(d.amount || 0), 0);
-  const offlineTotal = offlineDeposits.reduce((sum, d) => sum + Number(d.amount || 0), 0);
+  const deposits = useMemo(
+    () => transactions.filter((row) => row.type === "deposit"),
+    [transactions]
+  );
+  const withdrawals = useMemo(
+    () => transactions.filter((row) => row.type === "withdrawal"),
+    [transactions]
+  );
+  const repayments = useMemo(
+    () => transactions.filter((row) => row.type === "loan_repay"),
+    [transactions]
+  );
+  const activityFeed = useMemo(
+    () => buildAgentActivityFeed({ transactions, batches, dateStr: selectedDate }),
+    [transactions, batches, selectedDate]
+  );
+
+  const onlineTotal = deposits.reduce((sum, deposit) => sum + Number(deposit.amount || 0), 0);
+  const offlineTotal = offlineDeposits.reduce((sum, deposit) => sum + Number(deposit.amount || 0), 0);
   const grandTotal = onlineTotal + offlineTotal;
 
-  // Deposits recorded today that haven't been batched yet, grouped by groupId
   const unbatchedByGroup = deposits
-    .filter((d) => !d.batchId && d.status === "pending_confirmation")
-    .reduce((acc, d) => {
-      if (d.groupId) {
-        if (!acc[d.groupId]) acc[d.groupId] = [];
-        acc[d.groupId].push(d);
-      }
+    .filter((deposit) => !deposit.batchId && deposit.status === "pending_confirmation")
+    .reduce((acc, deposit) => {
+      if (!deposit.groupId) return acc;
+      if (!acc[deposit.groupId]) acc[deposit.groupId] = [];
+      acc[deposit.groupId].push(deposit);
       return acc;
     }, {});
   const groupsWithUnbatched = Object.keys(unbatchedByGroup);
 
+  const flaggedBatches = batches.filter((batch) => batch.status === "flagged");
+  const submittedBatches = batches.filter((batch) => batch.status === "submitted");
+  const confirmedBatches = batches.filter((batch) => batch.status === "confirmed");
+  const hasAnyActivity = transactions.length > 0 || offlineDeposits.length > 0 || batches.length > 0;
+
   return (
-    <main className="min-h-screen bg-slate-50 flex flex-col">
-      <header className="bg-white border-b border-slate-200 px-4 py-3">
-        <div className="flex items-center justify-between">
-          <div>
-            <h1 className="text-lg font-semibold text-slate-800">Today&apos;s Deposits</h1>
-            <p className="text-xs text-slate-400 mt-0.5">
-              {new Date().toLocaleDateString([], { weekday: "long", month: "long", day: "numeric" })}
-            </p>
-          </div>
-          {pendingCount > 0 && (
-            <span className="inline-flex items-center gap-1.5 bg-amber-100 text-amber-700 text-xs font-medium px-2.5 py-1 rounded-full">
-              <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
-              Pending Sync: {pendingCount}
-            </span>
-          )}
-        </div>
-      </header>
-
-      <div className="flex-1 max-w-md mx-auto w-full px-4 pt-4 pb-32 space-y-4">
-
-        {/* Errors */}
-        {error && (
-          <div className="bg-red-50 border border-red-200 rounded-xl px-4 py-3">
-            <p className="text-sm text-red-600">{error}</p>
-          </div>
-        )}
-        {submitError && (
-          <div className="bg-red-50 border border-red-200 rounded-xl px-4 py-3 flex items-start justify-between gap-2">
-            <p className="text-sm text-red-600">{submitError}</p>
-            <button onClick={() => setSubmitError(null)} className="text-red-400 hover:text-red-600 text-lg leading-none shrink-0">×</button>
-          </div>
-        )}
-        {submitSuccess && (
-          <div className="bg-emerald-50 border border-emerald-200 rounded-xl px-4 py-3 flex items-start justify-between gap-2">
-            <p className="text-sm text-emerald-700">Batch submitted to institution. Batch ID: <span className="font-mono text-xs">{submitSuccess.batchId}</span></p>
-            <button onClick={() => setSubmitSuccess(null)} className="text-emerald-400 hover:text-emerald-600 text-lg leading-none shrink-0">×</button>
-          </div>
-        )}
-
-        {/* Flagged Batches — prominent alert */}
-        {!loading && batches.filter((b) => b.status === "flagged").length > 0 && (
-          <section className="space-y-2">
-            <p className="text-xs font-semibold text-red-600 uppercase tracking-wider px-1">
-              Flagged Batches — Action Required
-            </p>
-            {batches.filter((b) => b.status === "flagged").map((batch) => (
-              <div key={batch.id} className="bg-red-50 border border-red-300 rounded-xl px-4 py-3 space-y-1">
-                <div className="flex items-center justify-between gap-2">
-                  <p className="text-sm font-semibold text-red-800">Batch Flagged by Institution</p>
-                  <span className="text-xs font-mono text-red-400">{batch.id.slice(0, 8)}…</span>
-                </div>
-                <p className="text-xs text-red-600">
-                  {formatAmount(batch.totalAmount)} BIF · {batch.memberCount} member{batch.memberCount !== 1 ? "s" : ""}
-                </p>
-                {(batch.institutionNotes || batch.umucoNotes) && (
-                  <p className="text-sm text-red-700 bg-white border border-red-200 rounded-lg px-3 py-2 mt-1">
-                    <span className="font-medium">Note: </span>{batch.institutionNotes || batch.umucoNotes}
-                  </p>
-                )}
-              </div>
-            ))}
-          </section>
-        )}
-
-        {/* Submitted Batches — awaiting confirmation */}
-        {!loading && batches.filter((b) => b.status === "submitted").length > 0 && (
-          <section className="space-y-2">
-            <p className="text-xs font-semibold text-blue-600 uppercase tracking-wider px-1">
-              Submitted — Awaiting Institution
-            </p>
-            {batches.filter((b) => b.status === "submitted").map((batch) => (
-              <div key={batch.id} className="bg-blue-50 border border-blue-200 rounded-xl px-4 py-3 flex items-center justify-between gap-3">
-                <div>
-                  <p className="text-sm font-medium text-blue-900">
-                    {formatAmount(batch.totalAmount)} BIF · {batch.memberCount} member{batch.memberCount !== 1 ? "s" : ""}
-                  </p>
-                  <p className="text-xs font-mono text-blue-400 mt-0.5">{batch.id.slice(0, 12)}…</p>
-                </div>
-                <span className="text-xs font-semibold bg-blue-100 text-blue-700 px-2 py-1 rounded-full">Pending</span>
-              </div>
-            ))}
-          </section>
-        )}
-
-        {/* Confirmed Batches */}
-        {!loading && batches.filter((b) => b.status === "confirmed").length > 0 && (
-          <section className="space-y-2">
-            <p className="text-xs font-semibold text-emerald-600 uppercase tracking-wider px-1">
-              Confirmed Today
-            </p>
-            {batches.filter((b) => b.status === "confirmed").map((batch) => (
-              <div key={batch.id} className="bg-emerald-50 border border-emerald-200 rounded-xl px-4 py-3 flex items-center justify-between gap-3">
-                <div>
-                  <p className="text-sm font-medium text-emerald-900">
-                    {formatAmount(batch.totalAmount)} BIF · {batch.memberCount} member{batch.memberCount !== 1 ? "s" : ""}
-                  </p>
-                  <p className="text-xs font-mono text-emerald-400 mt-0.5">{batch.id.slice(0, 12)}…</p>
-                </div>
-                <span className="text-xs font-semibold bg-emerald-100 text-emerald-700 px-2 py-1 rounded-full">Confirmed</span>
-              </div>
-            ))}
-          </section>
-        )}
-
-        {/* Submit to institution — shown when there are unbatched pending deposits */}
-        {!loading && groupsWithUnbatched.length > 0 && (
-          <section className="space-y-2">
-            <p className="text-xs font-semibold text-violet-600 uppercase tracking-wider px-1">
-              Ready to Submit
-            </p>
-            {groupsWithUnbatched.map((groupId) => {
-              const txs = unbatchedByGroup[groupId];
-              const total = txs.reduce((s, d) => s + Number(d.amount || 0), 0);
-              const isSubmitting = submittingGroup === groupId;
-              return (
-                <div key={groupId} className="bg-violet-50 border border-violet-200 rounded-xl px-4 py-3 flex items-center justify-between gap-3">
-                  <div className="min-w-0">
-                    <p className="text-sm font-medium text-violet-900">{txs.length} deposit{txs.length !== 1 ? "s" : ""}</p>
-                    <p className="text-xs text-violet-600 font-mono truncate">{groupId}</p>
-                    <p className="text-xs text-violet-700 mt-0.5">{formatAmount(total)} BIF pending</p>
-                  </div>
-                  <button
-                    type="button"
-                    disabled={isSubmitting || !!submittingGroup}
-                    onClick={() => handleSubmitBatch(groupId, txs.map((t) => t.id))}
-                    className="shrink-0 bg-violet-700 hover:bg-violet-800 disabled:opacity-50 text-white text-xs font-semibold px-3 py-2 rounded-lg transition-colors"
-                  >
-                    {isSubmitting ? "Submitting…" : "Submit Batch"}
-                  </button>
-                </div>
-              );
-            })}
-          </section>
-        )}
-
-        {/* Loading */}
-        {loading && (
-          <div className="flex items-center justify-center py-16">
-            <p className="text-sm text-slate-400 animate-pulse">Loading deposits…</p>
-          </div>
-        )}
-
-        {/* Online deposits */}
-        {!loading && (
-          <>
-            {deposits.length > 0 && (
-              <section className="space-y-2">
-                <p className="text-xs font-medium text-slate-400 uppercase tracking-wider px-1">
-                  Synced ({deposits.length})
-                </p>
-                <ul className="space-y-2">
-                  {deposits.map((dep) => (
-                    <DepositRow
-                      key={dep.id}
-                      fullName={dep.memberName ?? dep.memberId ?? dep.userId}
-                      memberId={dep.memberId}
-                      amount={dep.amount}
-                      time={formatTime(dep.createdAt)}
-                      badge={null}
-                    />
-                  ))}
-                </ul>
-              </section>
-            )}
-
-            {/* Offline / unsynced deposits */}
-            {offlineDeposits.length > 0 && (
-              <section className="space-y-2">
-                <p className="text-xs font-medium text-amber-600 uppercase tracking-wider px-1">
-                  Pending Sync ({offlineDeposits.length})
-                </p>
-                <ul className="space-y-2">
-                  {offlineDeposits.map((dep) => (
-                    <DepositRow
-                      key={dep.localId}
-                      fullName={dep.memberId}
-                      memberId={dep.memberId}
-                      amount={dep.amount}
-                      time={dep.createdAt ? new Date(dep.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "—"}
-                      badge="offline"
-                    />
-                  ))}
-                </ul>
-              </section>
-            )}
-
-            {/* Empty state */}
-            {deposits.length === 0 && offlineDeposits.length === 0 && (
-              <div className="flex flex-col items-center justify-center py-20 text-center">
-                <div className="w-14 h-14 bg-slate-100 rounded-full flex items-center justify-center mb-3">
-                  <svg className="w-7 h-7 text-slate-300" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-3-3v6M3 12a9 9 0 1118 0A9 9 0 013 12z" />
-                  </svg>
-                </div>
-                <p className="text-sm font-medium text-slate-500">No deposits recorded today</p>
-                <p className="text-xs text-slate-400 mt-1">Deposits you record will appear here.</p>
-              </div>
-            )}
-          </>
-        )}
-      </div>
-
-      {/* Sticky total footer */}
-      {!loading && (deposits.length > 0 || offlineDeposits.length > 0) && (
-        <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-slate-200 px-4 py-4 shadow-lg">
-          <div className="max-w-md mx-auto space-y-1.5">
-            {offlineDeposits.length > 0 && (
-              <div className="flex justify-between text-sm text-slate-500">
-                <span>Synced</span>
-                <span>{formatAmount(onlineTotal)} BIF</span>
-              </div>
-            )}
-            {offlineDeposits.length > 0 && (
-              <div className="flex justify-between text-sm text-amber-600">
-                <span>Pending Sync</span>
-                <span>{formatAmount(offlineTotal)} BIF</span>
-              </div>
-            )}
-            <div className="flex justify-between items-center pt-1 border-t border-slate-100">
-              <span className="text-sm font-semibold text-slate-700">Total Deposits Today</span>
-              <span className="text-lg font-bold text-slate-900">{formatAmount(grandTotal)} BIF</span>
+    <PageShell title="Activity" user={user}>
+      <Card>
+        <div className="px-5 py-4 space-y-4">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <p className="text-[11px] font-bold uppercase tracking-widest text-slate-400">Selected date</p>
+              <p className="mt-1 text-base font-bold text-slate-900">{dateHeading}</p>
+              <p className="mt-1 text-xs text-slate-500">
+                {isTodaySelected ? "Live operational activity for today." : "Historical activity is review-only."}
+              </p>
             </div>
+            <input
+              type="date"
+              max={today}
+              value={selectedDate}
+              onChange={(event) => setSelectedDate(event.target.value)}
+              className="text-xs text-slate-600 border-2 border-slate-100 rounded-xl px-3 py-2 bg-slate-50 focus:outline-none focus:border-brand-400 transition-colors"
+            />
+          </div>
+
+          <div className="grid grid-cols-3 gap-2">
+            <button
+              type="button"
+              onClick={() => setSelectedDate((current) => shiftISODate(current, -1))}
+              className="rounded-2xl border-2 border-slate-100 bg-slate-50 px-3 py-2.5 text-sm font-bold text-slate-700 transition-colors hover:bg-slate-100"
+            >
+              Previous
+            </button>
+            <button
+              type="button"
+              onClick={() => setSelectedDate(today)}
+              disabled={isTodaySelected}
+              className="rounded-2xl border-2 border-brand-100 bg-white px-3 py-2.5 text-sm font-bold text-brand-600 transition-colors hover:bg-brand-50 disabled:opacity-50"
+            >
+              Today
+            </button>
+            <button
+              type="button"
+              onClick={() => setSelectedDate((current) => shiftISODate(current, 1))}
+              disabled={!canMoveForward}
+              className="rounded-2xl border-2 border-slate-100 bg-slate-50 px-3 py-2.5 text-sm font-bold text-slate-700 transition-colors hover:bg-slate-100 disabled:opacity-50"
+            >
+              Next
+            </button>
+          </div>
+        </div>
+      </Card>
+
+      {!loading && !isTodaySelected ? (
+        <Alert type="warning">
+          Historical activity is review-only. Batch submission is available only for today&apos;s deposits.
+        </Alert>
+      ) : null}
+
+      {!loading && (
+        <div className="space-y-2">
+          <SectionLabel>{isTodaySelected ? "Today&apos;s Summary" : `Summary for ${dateCompact}`}</SectionLabel>
+          <div className="grid grid-cols-2 gap-3">
+            <SummaryCard
+              label="Deposits"
+              value={deposits.length + offlineDeposits.length}
+              sublabel={`${fmt(grandTotal)} BIF`}
+              accent={deposits.length > 0 || offlineDeposits.length > 0 ? "brand" : "slate"}
+            />
+            <SummaryCard
+              label="Pending Sync"
+              value={offlineDeposits.length}
+              sublabel={offlineDeposits.length === 1 ? "deposit" : "deposits"}
+              accent={offlineDeposits.length > 0 ? "gold" : "slate"}
+            />
+            <SummaryCard
+              label="Withdrawals"
+              value={withdrawals.length}
+              sublabel={withdrawals.length === 1 ? "confirmed payout" : "confirmed payouts"}
+              accent={withdrawals.length > 0 ? "blue" : "slate"}
+            />
+            <SummaryCard
+              label="Ready to Submit"
+              value={groupsWithUnbatched.length}
+              sublabel={groupsWithUnbatched.length === 1 ? "batch" : "batches"}
+              accent={groupsWithUnbatched.length > 0 ? "brand" : "slate"}
+            />
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <SummaryCard
+              label="Awaiting Confirm"
+              value={submittedBatches.length}
+              sublabel={submittedBatches.length === 1 ? "batch" : "batches"}
+              accent={submittedBatches.length > 0 ? "blue" : "slate"}
+            />
+            <SummaryCard
+              label="Repayments"
+              value={repayments.length}
+              sublabel={repayments.length === 1 ? "loan repayment" : "loan repayments"}
+              accent={repayments.length > 0 ? "gold" : "slate"}
+            />
           </div>
         </div>
       )}
-    </main>
+
+      {error ? <Alert type="error">{error}</Alert> : null}
+
+      {submitError ? (
+        <Alert type="error">
+          <div className="flex justify-between gap-2">
+            <span>{submitError}</span>
+            <button onClick={() => setSubmitError(null)} className="shrink-0 text-red-400">×</button>
+          </div>
+        </Alert>
+      ) : null}
+
+      {submitSuccess ? (
+        <Alert type="success">
+          <div className="flex justify-between gap-2">
+            <span>Batch submitted! ID: <span className="font-mono text-xs">{submitSuccess.batchId?.slice(0, 12)}…</span></span>
+            <button onClick={() => setSubmitSuccess(null)} className="shrink-0 text-brand-400">×</button>
+          </div>
+        </Alert>
+      ) : null}
+
+      {!loading && (flaggedBatches.length > 0 || groupsWithUnbatched.length > 0) ? (
+        <div className="space-y-3">
+          <SectionLabel>{isTodaySelected ? "Action Required" : "Review Notes"}</SectionLabel>
+
+          {flaggedBatches.map((batch) => (
+            <div key={batch.id} className="bg-red-50 border border-red-200 rounded-2xl px-4 py-4">
+              <div className="flex items-center justify-between gap-2 mb-2">
+                <p className="text-sm font-bold text-red-800">Batch Flagged by Institution</p>
+                <span className="text-[10px] font-mono text-red-400">{batch.id.slice(0, 8)}…</span>
+              </div>
+              <p className="text-xs text-red-600">{fmt(batch.totalAmount)} BIF · {batch.memberCount} member{batch.memberCount !== 1 ? "s" : ""}</p>
+              {(batch.institutionNotes || batch.umucoNotes) ? (
+                <p className="text-xs text-red-700 bg-white border border-red-100 rounded-xl px-3 py-2 mt-2">
+                  {batch.institutionNotes || batch.umucoNotes}
+                </p>
+              ) : null}
+              <button
+                type="button"
+                onClick={() => navigate(`/agent/activity/batches/${batch.id}`)}
+                className="mt-3 text-xs font-bold text-red-700 border border-red-200 bg-white rounded-xl px-3 py-2 hover:bg-red-100 transition-colors"
+              >
+                View Batch Detail
+              </button>
+            </div>
+          ))}
+
+          {groupsWithUnbatched.map((groupId) => {
+            const transactions = unbatchedByGroup[groupId];
+            const total = transactions.reduce((sum, deposit) => sum + Number(deposit.amount || 0), 0);
+            const isBusy = submittingGroup === groupId;
+            return (
+              <Card key={groupId}>
+                <div className="px-4 py-4 flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="text-sm font-bold text-slate-800">
+                      {transactions.length} deposit{transactions.length !== 1 ? "s" : ""} {isTodaySelected ? "ready" : "recorded"}
+                    </p>
+                    <p className="text-xs font-mono text-brand-600 truncate mt-0.5">{groupId}</p>
+                    <p className="text-xs text-slate-400 mt-0.5">
+                      {fmt(total)} BIF
+                      {!isTodaySelected ? " · Review only" : ""}
+                    </p>
+                  </div>
+                  {isTodaySelected ? (
+                    <button
+                      type="button"
+                      disabled={isBusy || !!submittingGroup}
+                      onClick={() => handleSubmitBatch(groupId, transactions.map((transaction) => transaction.id))}
+                      className="shrink-0 bg-brand-500 hover:bg-brand-600 disabled:opacity-50 text-white text-xs font-bold px-4 py-2.5 rounded-xl transition-colors"
+                    >
+                      {isBusy ? "Submitting…" : "Submit Batch"}
+                    </button>
+                  ) : (
+                    <span className="shrink-0 text-[10px] font-bold bg-slate-100 text-slate-500 px-2.5 py-1 rounded-full uppercase tracking-wide">
+                      Review Only
+                    </span>
+                  )}
+                </div>
+              </Card>
+            );
+          })}
+        </div>
+      ) : null}
+
+      {!loading && (submittedBatches.length > 0 || confirmedBatches.length > 0) ? (
+        <div className="space-y-3">
+          <SectionLabel>Deposit Batches</SectionLabel>
+
+          {submittedBatches.map((batch) => (
+            <div key={batch.id} className="bg-blue-50 border border-blue-100 rounded-2xl px-4 py-3 flex items-center justify-between gap-3">
+              <div>
+                <p className="text-sm font-semibold text-blue-900">{fmt(batch.totalAmount)} BIF · {batch.memberCount} member{batch.memberCount !== 1 ? "s" : ""}</p>
+                <p className="text-[10px] font-mono text-blue-400 mt-0.5">{batch.id.slice(0, 12)}…</p>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => navigate(`/agent/activity/batches/${batch.id}`)}
+                  className="text-[10px] font-bold bg-white text-blue-700 px-2.5 py-1.5 rounded-full uppercase tracking-wide border border-blue-200"
+                >
+                  Detail
+                </button>
+                <span className="text-[10px] font-bold bg-blue-100 text-blue-600 px-2.5 py-1 rounded-full uppercase tracking-wide">Pending</span>
+              </div>
+            </div>
+          ))}
+
+          {confirmedBatches.map((batch) => (
+            <div key={batch.id} className="bg-brand-50 border border-brand-100 rounded-2xl px-4 py-3 flex items-center justify-between gap-3">
+              <div>
+                <p className="text-sm font-semibold text-brand-900">{fmt(batch.totalAmount)} BIF · {batch.memberCount} member{batch.memberCount !== 1 ? "s" : ""}</p>
+                <p className="text-[10px] font-mono text-brand-400 mt-0.5">{batch.id.slice(0, 12)}…</p>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => navigate(`/agent/activity/batches/${batch.id}`)}
+                  className="text-[10px] font-bold bg-white text-brand-700 px-2.5 py-1.5 rounded-full uppercase tracking-wide border border-brand-200"
+                >
+                  Detail
+                </button>
+                <span className="text-[10px] font-bold bg-brand-100 text-brand-600 px-2.5 py-1 rounded-full uppercase tracking-wide">Confirmed</span>
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : null}
+
+      {!loading && (deposits.length > 0 || offlineDeposits.length > 0) ? (
+        <div className="space-y-3">
+          <SectionLabel>Deposit Records</SectionLabel>
+
+          {deposits.length > 0 ? (
+            <div className="space-y-2">
+              <p className="text-xs font-bold text-slate-400 uppercase tracking-wide px-1">Synced Deposits ({deposits.length})</p>
+              <Card>
+                <div className="divide-y divide-slate-50">
+                  {deposits.map((deposit) => (
+                    <TransactionRow
+                      key={deposit.id}
+                      name={deposit.memberName ?? deposit.memberId ?? deposit.userId}
+                      memberId={deposit.memberId}
+                      amount={deposit.amount}
+                      time={formatTime(deposit.createdAt)}
+                      type="deposit"
+                      offline={false}
+                    />
+                  ))}
+                </div>
+              </Card>
+            </div>
+          ) : null}
+
+          {offlineDeposits.length > 0 ? (
+            <div className="space-y-2">
+              <p className="text-xs font-bold text-gold-500 uppercase tracking-wide px-1">Pending Sync ({offlineDeposits.length})</p>
+              <Card>
+                <div className="divide-y divide-slate-50">
+                  {offlineDeposits.map((deposit) => (
+                    <TransactionRow
+                      key={deposit.localId}
+                      name={deposit.memberId}
+                      memberId={deposit.memberId}
+                      amount={deposit.amount}
+                      time={deposit.createdAt ? new Date(deposit.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "—"}
+                      type="deposit"
+                      offline
+                    />
+                  ))}
+                </div>
+              </Card>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+
+      {!loading && activityFeed.length > 0 ? (
+        <div className="space-y-3">
+          <SectionLabel>Daily Activity Feed</SectionLabel>
+          <Card>
+            <div className="divide-y divide-slate-50">
+              {activityFeed.map((entry) => (
+                <ActivityFeedRow key={entry.id} entry={entry} />
+              ))}
+            </div>
+          </Card>
+        </div>
+      ) : null}
+
+      {loading ? (
+        <div className="space-y-3 animate-pulse">
+          <div className="grid grid-cols-2 gap-3">
+            {[...Array(4)].map((_, index) => (
+              <div key={index} className="h-20 bg-white rounded-2xl shadow-card" />
+            ))}
+          </div>
+          {[...Array(3)].map((_, index) => (
+            <div key={index} className="h-16 bg-white rounded-2xl shadow-card" />
+          ))}
+        </div>
+      ) : null}
+
+      {!loading && !hasAnyActivity ? (
+        <Card>
+          <EmptyState
+            title={isTodaySelected ? "No activity today" : `No activity on ${dateCompact}`}
+            subtitle={
+              isTodaySelected
+                ? "Transactions you record will appear here."
+                : "There were no recorded transactions or batches for this date."
+            }
+          />
+        </Card>
+      ) : null}
+
+      {!loading && (deposits.length > 0 || offlineDeposits.length > 0) ? (
+        <div className="fixed bottom-16 left-0 right-0 z-30 px-4 pb-2">
+          <div className="max-w-lg mx-auto bg-brand-500 rounded-2xl px-5 py-3 shadow-card-lg">
+            <div className="flex items-center justify-between">
+              <div>
+                {offlineDeposits.length > 0 ? (
+                  <div className="flex gap-3 text-xs text-brand-100 mb-0.5">
+                    <span>Synced: {fmt(onlineTotal)}</span>
+                    <span>· Offline: {fmt(offlineTotal)}</span>
+                  </div>
+                ) : null}
+                <p className="text-xs text-brand-200 font-medium">{isTodaySelected ? "Total Today" : `Total for ${dateCompact}`}</p>
+              </div>
+              <p className="text-xl font-bold text-white">
+                {fmt(grandTotal)} <span className="text-sm font-normal text-brand-200">BIF</span>
+              </p>
+            </div>
+          </div>
+        </div>
+      ) : null}
+    </PageShell>
   );
 }
 
-function DepositRow({ fullName, memberId, amount, time, badge }) {
+function SummaryCard({ label, value, sublabel, accent = "slate" }) {
+  const bgClass = {
+    brand: "bg-brand-50 border-brand-100",
+    gold: "bg-gold-50 border-gold-200",
+    blue: "bg-blue-50 border-blue-100",
+    slate: "bg-slate-50 border-slate-100",
+  }[accent];
+
+  const valueClass = {
+    brand: "text-brand-600",
+    gold: "text-gold-600",
+    blue: "text-blue-600",
+    slate: "text-slate-500",
+  }[accent];
+
+  const labelClass = {
+    brand: "text-brand-700",
+    gold: "text-gold-700",
+    blue: "text-blue-700",
+    slate: "text-slate-500",
+  }[accent];
+
   return (
-    <li className="bg-white rounded-xl border border-slate-200 px-4 py-3 flex items-center justify-between gap-3">
-      <div className="min-w-0">
-        <div className="flex items-center gap-2 flex-wrap">
-          <p className="text-sm font-medium text-slate-800 truncate">{fullName}</p>
-          {badge === "offline" && (
-            <span className="text-[10px] font-semibold bg-amber-100 text-amber-600 px-1.5 py-0.5 rounded-full uppercase tracking-wide">
+    <div className={`${bgClass} border rounded-2xl px-4 py-3 text-center`}>
+      <p className={`text-2xl font-bold ${valueClass}`}>{value}</p>
+      <p className={`text-xs font-semibold ${labelClass} mt-0.5`}>{label}</p>
+      <p className="text-[10px] text-slate-400 mt-0.5">{sublabel}</p>
+    </div>
+  );
+}
+
+function TransactionRow({ name, memberId, amount, time, type, offline }) {
+  return (
+    <div className="flex items-center justify-between gap-3 px-5 py-3">
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-2">
+          <p className="text-sm font-semibold text-slate-800 truncate">{name}</p>
+          {offline ? (
+            <span className="text-[9px] font-bold bg-gold-100 text-gold-600 px-1.5 py-0.5 rounded-full uppercase">
               Offline
             </span>
-          )}
+          ) : null}
         </div>
-        {memberId && memberId !== fullName && (
-          <p className="text-xs font-mono text-blue-600 mt-0.5">{memberId}</p>
-        )}
+        {memberId && memberId !== name ? (
+          <p className="text-xs font-mono text-brand-600 mt-0.5">{memberId}</p>
+        ) : null}
         <p className="text-xs text-slate-400 mt-0.5">{time}</p>
       </div>
-      <p className="text-sm font-semibold text-slate-800 shrink-0">
-        {formatAmount(amount)} <span className="text-xs font-normal text-slate-400">BIF</span>
-      </p>
-    </li>
+      <div className="text-right shrink-0">
+        <p className="text-sm font-bold text-slate-800">
+          {fmt(amount)} <span className="text-xs font-normal text-slate-400">BIF</span>
+        </p>
+        <p className="text-[10px] text-slate-400 uppercase tracking-wide mt-0.5">{type}</p>
+      </div>
+    </div>
+  );
+}
+
+function ActivityFeedRow({ entry }) {
+  const toneClasses = {
+    brand: "bg-brand-50 text-brand-700 border-brand-100",
+    blue: "bg-blue-50 text-blue-700 border-blue-100",
+    gold: "bg-gold-50 text-gold-700 border-gold-100",
+    red: "bg-red-50 text-red-700 border-red-100",
+    slate: "bg-slate-50 text-slate-600 border-slate-100",
+  };
+  const tone = toneClasses[entry.tone] || toneClasses.slate;
+
+  return (
+    <div className="px-5 py-3 flex items-start justify-between gap-3">
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-2">
+          <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide ${tone}`}>
+            {entry.label}
+          </span>
+          {entry.status ? (
+            <span className="text-[10px] uppercase tracking-wide text-slate-400">{String(entry.status).replace(/_/g, " ")}</span>
+          ) : null}
+        </div>
+        <p className="mt-1 text-sm font-semibold text-slate-800 truncate">{entry.memberName}</p>
+        <p className="mt-0.5 text-xs text-slate-400">{entry.reference}</p>
+      </div>
+      <div className="text-right shrink-0">
+        <p className="text-sm font-bold text-slate-900">
+          {fmt(entry.amount)} <span className="text-xs font-normal text-slate-400">BIF</span>
+        </p>
+        <p className="mt-0.5 text-xs text-slate-400">{formatTime(entry.createdAt)}</p>
+      </div>
+    </div>
   );
 }

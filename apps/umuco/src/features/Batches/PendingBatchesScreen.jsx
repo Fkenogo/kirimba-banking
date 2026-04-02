@@ -1,43 +1,29 @@
-import { useEffect, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { useEffect, useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 import {
-  collection,
-  doc,
-  getDoc,
-  getDocs,
-  orderBy,
-  query,
-  where,
+  collection, doc, getDoc, getDocs, orderBy, query, where,
 } from "firebase/firestore";
 import { db } from "../../services/firebase";
+import {
+  PageShell, Card, Alert, EmptyState, LoadingState,
+  StatusBadge, PrimaryButton, formatBIF, formatDate,
+} from "../../components/ui";
+import { buildBatchFilterOptions, filterBatchRows } from "./batchFilters";
 
-function formatAmount(n) {
-  return `${Number(n || 0).toLocaleString("en-US")} BIF`;
-}
-
-function formatDate(ts) {
-  if (!ts) return "—";
-  const d = ts._seconds ? new Date(ts._seconds * 1000) : ts.toDate ? ts.toDate() : new Date(ts);
-  return d.toLocaleString([], {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
-}
-
-export default function PendingBatchesScreen({ institutionId }) {
-  const navigate = useNavigate();
+export default function PendingBatchesScreen({ institutionId, institutionName }) {
   const [batches, setBatches] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
+  const [error, setError]     = useState("");
+  const [filters, setFilters] = useState({
+    query: "",
+    groupId: "",
+    agentId: "",
+    dateFrom: "",
+    dateTo: "",
+  });
 
   async function load() {
-    if (!institutionId) {
-      setLoading(false);
-      return;
-    }
+    if (!institutionId) { setLoading(false); return; }
     setLoading(true);
     setError("");
     try {
@@ -52,7 +38,6 @@ export default function PendingBatchesScreen({ institutionId }) {
 
       const rows = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
 
-      // Batch-fetch group names and agent names
       const groupIds = [...new Set(rows.map((b) => b.groupId).filter(Boolean))];
       const agentIds = [...new Set(rows.map((b) => b.agentId).filter(Boolean))];
 
@@ -88,100 +73,124 @@ export default function PendingBatchesScreen({ institutionId }) {
     }
   }
 
-  useEffect(() => {
-    load();
-  }, []);
+  useEffect(() => { load(); }, []);
+
+  const filterOptions = useMemo(() => buildBatchFilterOptions(batches), [batches]);
+  const filteredBatches = useMemo(
+    () => filterBatchRows(batches, filters, { dateField: "submittedAt" }),
+    [batches, filters]
+  );
 
   return (
-    <main className="min-h-screen bg-slate-50 p-6">
-      <div className="mx-auto max-w-4xl space-y-4">
-        <div className="flex items-center justify-between">
-          <div>
-            <button
-              type="button"
-              onClick={() => navigate("/umuco/home")}
-              className="mb-1 flex items-center gap-1 text-xs text-slate-500 hover:text-slate-700"
-            >
-              ← Back to Home
-            </button>
-            <h1 className="text-xl font-semibold text-slate-900">Pending Batches</h1>
-            {!loading && (
-              <p className="text-xs text-slate-400 mt-0.5">
-                {batches.length} batch{batches.length !== 1 ? "es" : ""} awaiting decision
-              </p>
-            )}
-          </div>
-          <button
-            type="button"
-            onClick={load}
-            disabled={loading}
-            className="rounded-md border border-slate-300 px-3 py-1.5 text-sm text-slate-700 bg-white hover:bg-slate-50 disabled:opacity-60"
-          >
-            Refresh
-          </button>
-        </div>
+    <PageShell title="Pending Batches" institutionName={institutionName}>
+      {/* Toolbar */}
+      <div className="flex items-center justify-between gap-4">
+        <p className="text-sm text-slate-500">
+          {!loading && `${filteredBatches.length} batch${filteredBatches.length !== 1 ? "es" : ""} awaiting decision`}
+        </p>
+        <PrimaryButton onClick={load} disabled={loading} variant="outline">
+          {loading ? "Loading…" : "Refresh"}
+        </PrimaryButton>
+      </div>
 
-        {error && (
-          <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3">
-            <p className="text-sm text-red-600">{error}</p>
+      {error && <Alert type="error">{error}</Alert>}
+
+      {!loading && batches.length > 0 && (
+        <Card className="px-5 py-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-3">
+            <input
+              type="text"
+              value={filters.query}
+              onChange={(event) => setFilters((current) => ({ ...current, query: event.target.value }))}
+              placeholder="Search batch, group, agent, reference"
+              className="rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm text-slate-900 placeholder-slate-400"
+            />
+            <select
+              value={filters.groupId}
+              onChange={(event) => setFilters((current) => ({ ...current, groupId: event.target.value }))}
+              className="rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm text-slate-900"
+            >
+              <option value="">All groups</option>
+              {filterOptions.groups.map((option) => <option key={option.id} value={option.id}>{option.name}</option>)}
+            </select>
+            <select
+              value={filters.agentId}
+              onChange={(event) => setFilters((current) => ({ ...current, agentId: event.target.value }))}
+              className="rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm text-slate-900"
+            >
+              <option value="">All agents</option>
+              {filterOptions.agents.map((option) => <option key={option.id} value={option.id}>{option.name}</option>)}
+            </select>
+            <input
+              type="date"
+              value={filters.dateFrom}
+              onChange={(event) => setFilters((current) => ({ ...current, dateFrom: event.target.value }))}
+              className="rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm text-slate-900"
+            />
+            <input
+              type="date"
+              value={filters.dateTo}
+              onChange={(event) => setFilters((current) => ({ ...current, dateTo: event.target.value }))}
+              className="rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm text-slate-900"
+            />
+          </div>
+        </Card>
+      )}
+
+      <Card>
+        {loading ? (
+          <LoadingState label="Loading batches…" />
+        ) : filteredBatches.length === 0 ? (
+          <EmptyState
+            title={batches.length === 0 ? "No pending batches" : "No batches match the current filters"}
+            subtitle={batches.length === 0 ? "Batches submitted by agents will appear here for review." : "Try clearing one or more filters."}
+          />
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-brand-100 bg-brand-50 text-left">
+                  <th className="px-5 py-3 text-xs font-semibold uppercase tracking-wide text-brand-700">Group</th>
+                  <th className="px-5 py-3 text-xs font-semibold uppercase tracking-wide text-brand-700">Agent</th>
+                  <th className="px-5 py-3 text-xs font-semibold uppercase tracking-wide text-brand-700 text-right">Amount</th>
+                  <th className="px-5 py-3 text-xs font-semibold uppercase tracking-wide text-brand-700 text-center">Members</th>
+                  <th className="px-5 py-3 text-xs font-semibold uppercase tracking-wide text-brand-700">Submitted</th>
+                  <th className="px-5 py-3 text-xs font-semibold uppercase tracking-wide text-brand-700">Batch ID</th>
+                  <th className="px-5 py-3 text-xs font-semibold uppercase tracking-wide text-brand-700"></th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {filteredBatches.map((b) => (
+                  <tr key={b.id} className="hover:bg-brand-50/50 transition-colors">
+                    <td className="px-5 py-3.5 font-semibold text-slate-900">{b.groupName}</td>
+                    <td className="px-5 py-3.5 text-slate-600">{b.agentName}</td>
+                    <td className="px-5 py-3.5 text-right font-bold text-brand-700">
+                      {formatBIF(b.totalAmount)}
+                    </td>
+                    <td className="px-5 py-3.5 text-center text-slate-700">
+                      {Number(b.memberCount || 0)}
+                    </td>
+                    <td className="px-5 py-3.5 text-slate-500 whitespace-nowrap">
+                      {formatDate(b.submittedAt)}
+                    </td>
+                    <td className="px-5 py-3.5 font-mono text-xs text-slate-400">
+                      {b.id.slice(0, 12)}…
+                    </td>
+                    <td className="px-5 py-3.5 text-right">
+                      <Link
+                        to={`/umuco/batch/${b.id}`}
+                        className="inline-flex items-center rounded-xl bg-brand-500 hover:bg-brand-600 px-3 py-1.5 text-xs font-semibold text-white transition-colors"
+                      >
+                        Review
+                      </Link>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         )}
-
-        <section className="rounded-xl border border-slate-200 bg-white shadow-sm overflow-hidden">
-          {loading ? (
-            <div className="px-5 py-12 text-sm text-slate-400 animate-pulse">Loading batches…</div>
-          ) : batches.length === 0 ? (
-            <div className="px-5 py-12 text-center">
-              <p className="text-sm text-slate-500">No submitted batches right now.</p>
-              <p className="text-xs text-slate-400 mt-1">Batches submitted by agents will appear here.</p>
-            </div>
-          ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b border-slate-200 bg-slate-50 text-left text-xs font-medium uppercase tracking-wide text-slate-500">
-                    <th className="px-5 py-3">Group</th>
-                    <th className="px-5 py-3">Agent</th>
-                    <th className="px-5 py-3 text-right">Amount</th>
-                    <th className="px-5 py-3 text-center">Members</th>
-                    <th className="px-5 py-3">Submitted</th>
-                    <th className="px-5 py-3">Batch ID</th>
-                    <th className="px-5 py-3"></th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100">
-                  {batches.map((b) => (
-                    <tr key={b.id} className="hover:bg-slate-50">
-                      <td className="px-5 py-3.5 font-medium text-slate-900">{b.groupName}</td>
-                      <td className="px-5 py-3.5 text-slate-600">{b.agentName}</td>
-                      <td className="px-5 py-3.5 text-right font-semibold text-slate-800">
-                        {formatAmount(b.totalAmount)}
-                      </td>
-                      <td className="px-5 py-3.5 text-center text-slate-700">
-                        {Number(b.memberCount || 0)}
-                      </td>
-                      <td className="px-5 py-3.5 text-slate-500 whitespace-nowrap">
-                        {formatDate(b.submittedAt)}
-                      </td>
-                      <td className="px-5 py-3.5 font-mono text-xs text-slate-400">
-                        {b.id.slice(0, 12)}…
-                      </td>
-                      <td className="px-5 py-3.5 text-right">
-                        <Link
-                          to={`/umuco/batch/${b.id}`}
-                          className="rounded-md bg-slate-900 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-black"
-                        >
-                          Open
-                        </Link>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </section>
-      </div>
-    </main>
+      </Card>
+    </PageShell>
   );
 }

@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { httpsCallable } from "firebase/functions";
 import { functions } from "../../services/firebase";
+import { ADMIN_ROUTES } from "../../config/console";
 
 function fmt(n) {
   return Number(n || 0).toLocaleString("en-US");
@@ -36,26 +37,26 @@ export default function ExecutiveDashboardScreen() {
   const fund = s.fund || {};
 
   return (
-    <main className="min-h-screen bg-slate-50 p-6">
+    <main className="px-8 py-7 bg-brand-50">
       <div className="mx-auto max-w-5xl space-y-6">
 
         <div className="flex items-center justify-between gap-4">
           <div>
             <button type="button" onClick={() => navigate("/admin/dashboard")}
-              className="mb-1 flex items-center gap-1 text-xs text-slate-500 hover:text-slate-700">
+              className="mb-1 flex items-center gap-1 text-xs font-medium text-brand-600 hover:text-brand-700">
               ← Back to Dashboard
             </button>
             <h1 className="text-xl font-semibold text-slate-900">Executive Overview</h1>
             <p className="text-xs text-slate-400 mt-0.5">System-wide business health snapshot</p>
           </div>
           <button type="button" onClick={load} disabled={loading}
-            className="rounded-md border border-slate-300 px-3 py-1.5 text-sm text-slate-700 bg-white hover:bg-slate-50 disabled:opacity-60">
+            className="rounded-md border border-slate-300 px-3 py-1.5 text-sm text-slate-700 bg-white hover:bg-brand-50 disabled:opacity-60">
             Refresh
           </button>
         </div>
 
         {error && (
-          <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3">
+          <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3">
             <p className="text-sm text-red-700">{error}</p>
           </div>
         )}
@@ -114,7 +115,7 @@ export default function ExecutiveDashboardScreen() {
                   label="Flagged Batches"
                   value={fmt(s.flaggedBatchCount)}
                   tone={s.flaggedBatchCount > 0 ? "amber" : "slate"}
-                  onClick={() => navigate("/admin/super/exceptions")}
+                  onClick={() => navigate(ADMIN_ROUTES.RISK_EXCEPTIONS)}
                   hint="View exceptions"
                 />
                 <Metric label="Submitted Batches" value={fmt(s.submittedBatchCount)} tone="slate" onClick={() => navigate("/admin/deposits/pending")} hint="View deposits" />
@@ -127,10 +128,10 @@ export default function ExecutiveDashboardScreen() {
                 { label: "Transaction Oversight", path: "/admin/super/transactions" },
                 { label: "All Groups", path: "/admin/super/groups" },
                 { label: "Loan Portfolio", path: "/admin/super/loans" },
-                { label: "Risk & Exceptions", path: "/admin/super/exceptions" },
+                { label: "Risk & Exceptions", path: ADMIN_ROUTES.RISK_EXCEPTIONS },
               ].map((link) => (
                 <button key={link.path} type="button" onClick={() => navigate(link.path)}
-                  className="rounded-lg border border-slate-200 bg-white px-4 py-3 text-sm font-medium text-slate-700 hover:border-slate-400 hover:bg-slate-50 transition-all text-left">
+                  className="rounded-lg border border-slate-200 bg-white px-4 py-3 text-sm font-medium text-slate-700 hover:border-slate-400 hover:bg-brand-50 transition-all text-left">
                   {link.label} →
                 </button>
               ))}

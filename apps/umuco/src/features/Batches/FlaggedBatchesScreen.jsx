@@ -1,43 +1,29 @@
-import { useEffect, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { useEffect, useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 import {
-  collection,
-  doc,
-  getDoc,
-  getDocs,
-  orderBy,
-  query,
-  where,
+  collection, doc, getDoc, getDocs, orderBy, query, where,
 } from "firebase/firestore";
 import { db } from "../../services/firebase";
+import {
+  PageShell, Card, Alert, EmptyState, LoadingState,
+  PrimaryButton, formatBIF, formatDate,
+} from "../../components/ui";
+import { buildBatchFilterOptions, filterBatchRows } from "./batchFilters";
 
-function formatAmount(n) {
-  return `${Number(n || 0).toLocaleString("en-US")} BIF`;
-}
-
-function formatDate(ts) {
-  if (!ts) return "—";
-  const d = ts._seconds ? new Date(ts._seconds * 1000) : ts.toDate ? ts.toDate() : new Date(ts);
-  return d.toLocaleString([], {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
-}
-
-export default function FlaggedBatchesScreen({ institutionId }) {
-  const navigate = useNavigate();
+export default function FlaggedBatchesScreen({ institutionId, institutionName }) {
   const [batches, setBatches] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
+  const [error, setError]     = useState("");
+  const [filters, setFilters] = useState({
+    query: "",
+    groupId: "",
+    agentId: "",
+    dateFrom: "",
+    dateTo: "",
+  });
 
   async function load() {
-    if (!institutionId) {
-      setLoading(false);
-      return;
-    }
+    if (!institutionId) { setLoading(false); return; }
     setLoading(true);
     setError("");
     try {
@@ -87,106 +73,130 @@ export default function FlaggedBatchesScreen({ institutionId }) {
     }
   }
 
-  useEffect(() => {
-    load();
-  }, []);
+  useEffect(() => { load(); }, []);
+
+  const filterOptions = useMemo(() => buildBatchFilterOptions(batches), [batches]);
+  const filteredBatches = useMemo(
+    () => filterBatchRows(batches, filters, { dateField: "flaggedAt" }),
+    [batches, filters]
+  );
 
   return (
-    <main className="min-h-screen bg-slate-50 p-6">
-      <div className="mx-auto max-w-4xl space-y-4">
-        <div className="flex items-center justify-between">
-          <div>
-            <button
-              type="button"
-              onClick={() => navigate("/umuco/home")}
-              className="mb-1 flex items-center gap-1 text-xs text-slate-500 hover:text-slate-700"
+    <PageShell title="Flagged Batches" institutionName={institutionName}>
+      {/* Toolbar */}
+      <div className="flex items-center justify-between gap-4">
+        <p className="text-sm text-slate-500">
+          {!loading && (
+            filteredBatches.length === 0
+              ? "No flagged batches — all clear"
+              : `${filteredBatches.length} batch${filteredBatches.length !== 1 ? "es" : ""} flagged for follow-up`
+          )}
+        </p>
+        <PrimaryButton onClick={load} disabled={loading} variant="outline">
+          {loading ? "Loading…" : "Refresh"}
+        </PrimaryButton>
+      </div>
+
+      {error && <Alert type="error">{error}</Alert>}
+
+      {!loading && batches.length > 0 && (
+        <Alert type="warning">
+          These batches were flagged due to discrepancies. Open each batch to review the issue and
+          coordinate with the agent for resubmission or correction.
+        </Alert>
+      )}
+
+      {!loading && batches.length > 0 && (
+        <Card className="px-5 py-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-3">
+            <input
+              type="text"
+              value={filters.query}
+              onChange={(event) => setFilters((current) => ({ ...current, query: event.target.value }))}
+              placeholder="Search batch, group, agent, reference"
+              className="rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm text-slate-900 placeholder-slate-400"
+            />
+            <select
+              value={filters.groupId}
+              onChange={(event) => setFilters((current) => ({ ...current, groupId: event.target.value }))}
+              className="rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm text-slate-900"
             >
-              ← Back to Home
-            </button>
-            <h1 className="text-xl font-semibold text-slate-900">Flagged Batches</h1>
-            {!loading && (
-              <p className="text-xs text-slate-400 mt-0.5">
-                {batches.length === 0
-                  ? "No flagged batches — all clear"
-                  : `${batches.length} batch${batches.length !== 1 ? "es" : ""} flagged for follow-up`}
-              </p>
-            )}
+              <option value="">All groups</option>
+              {filterOptions.groups.map((option) => <option key={option.id} value={option.id}>{option.name}</option>)}
+            </select>
+            <select
+              value={filters.agentId}
+              onChange={(event) => setFilters((current) => ({ ...current, agentId: event.target.value }))}
+              className="rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm text-slate-900"
+            >
+              <option value="">All agents</option>
+              {filterOptions.agents.map((option) => <option key={option.id} value={option.id}>{option.name}</option>)}
+            </select>
+            <input
+              type="date"
+              value={filters.dateFrom}
+              onChange={(event) => setFilters((current) => ({ ...current, dateFrom: event.target.value }))}
+              className="rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm text-slate-900"
+            />
+            <input
+              type="date"
+              value={filters.dateTo}
+              onChange={(event) => setFilters((current) => ({ ...current, dateTo: event.target.value }))}
+              className="rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm text-slate-900"
+            />
           </div>
-          <button
-            type="button"
-            onClick={load}
-            disabled={loading}
-            className="rounded-md border border-slate-300 px-3 py-1.5 text-sm text-slate-700 bg-white hover:bg-slate-50 disabled:opacity-60"
-          >
-            Refresh
-          </button>
-        </div>
+        </Card>
+      )}
 
-        {error && (
-          <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3">
-            <p className="text-sm text-red-600">{error}</p>
-          </div>
-        )}
-
-        {!loading && batches.length > 0 && (
-          <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3">
-            <p className="text-sm text-amber-800">
-              These batches were flagged due to discrepancies. Open each batch to review the issue and
-              coordinate with the agent for resubmission or correction.
-            </p>
-          </div>
-        )}
-
-        <section className="rounded-xl border border-slate-200 bg-white shadow-sm overflow-hidden">
-          {loading ? (
-            <div className="px-5 py-12 text-sm text-slate-400 animate-pulse">Loading flagged batches…</div>
-          ) : batches.length === 0 ? (
-            <div className="px-5 py-12 text-center">
-              <p className="text-sm text-slate-500">No flagged batches.</p>
-              <p className="text-xs text-slate-400 mt-1">All submitted batches have been resolved.</p>
-            </div>
-          ) : (
-            <div className="divide-y divide-slate-100">
-              {batches.map((b) => (
-                <div key={b.id} className="px-5 py-4 space-y-2">
-                  <div className="flex items-start justify-between gap-4">
-                    <div>
-                      <p className="text-sm font-semibold text-slate-900">{b.groupName}</p>
-                      <p className="text-sm text-slate-600">
-                        Agent: {b.agentName}
-                      </p>
-                      <p className="text-xs font-mono text-slate-400 mt-0.5">{b.id.slice(0, 16)}…</p>
-                    </div>
-                    <div className="text-right shrink-0 space-y-1">
-                      <p className="text-sm font-semibold text-slate-900">
-                        {formatAmount(b.totalAmount)}
-                      </p>
-                      <p className="text-xs text-slate-500">{Number(b.memberCount || 0)} members</p>
-                      <Link
-                        to={`/umuco/batch/${b.id}`}
-                        className="inline-flex rounded-md bg-slate-900 px-2.5 py-1 text-xs font-medium text-white hover:bg-black"
-                      >
-                        Open Batch
-                      </Link>
-                    </div>
+      <Card>
+        {loading ? (
+          <LoadingState label="Loading flagged batches…" />
+        ) : filteredBatches.length === 0 ? (
+          <EmptyState
+            title={batches.length === 0 ? "No flagged batches" : "No flagged batches match the current filters"}
+            subtitle={batches.length === 0 ? "All submitted batches have been resolved." : "Try clearing one or more filters."}
+          />
+        ) : (
+          <div className="divide-y divide-slate-100">
+            {filteredBatches.map((b) => (
+              <div key={b.id} className="px-5 py-5">
+                <div className="flex items-start justify-between gap-4">
+                  {/* Left: group / agent info */}
+                  <div className="min-w-0">
+                    <p className="text-base font-semibold text-slate-900 truncate">{b.groupName}</p>
+                    <p className="text-sm text-slate-500 mt-0.5">Agent: {b.agentName}</p>
+                    <p className="mt-1 font-mono text-xs text-slate-400">{b.id.slice(0, 16)}…</p>
                   </div>
 
-                  {(b.institutionNotes || b.umucoNotes) && (
-                    <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2">
-                      <p className="text-xs font-semibold text-red-700 mb-0.5">Flag Reason</p>
-                      <p className="text-sm text-red-800">{b.institutionNotes || b.umucoNotes}</p>
-                    </div>
-                  )}
-
-                  <p className="text-xs text-slate-400">
-                    Flagged {formatDate(b.flaggedAt)} · Submitted {formatDate(b.submittedAt)}
-                  </p>
+                  {/* Right: amount + action */}
+                  <div className="text-right shrink-0 space-y-2">
+                    <p className="text-lg font-bold text-brand-700">{formatBIF(b.totalAmount)}</p>
+                    <p className="text-xs text-slate-500">{Number(b.memberCount || 0)} members</p>
+                    <Link
+                      to={`/umuco/batch/${b.id}`}
+                      className="inline-flex items-center rounded-xl bg-brand-500 hover:bg-brand-600 px-3 py-1.5 text-xs font-semibold text-white transition-colors"
+                    >
+                      Open Batch
+                    </Link>
+                  </div>
                 </div>
-              ))}
-            </div>
-          )}
-        </section>
-      </div>
-    </main>
+
+                {/* Flag reason */}
+                {(b.institutionNotes || b.umucoNotes) && (
+                  <div className="mt-3 rounded-xl border border-red-200 bg-red-50 px-4 py-3">
+                    <p className="text-xs font-semibold text-red-700 mb-1">Flag Reason</p>
+                    <p className="text-sm text-red-800">{b.institutionNotes || b.umucoNotes}</p>
+                  </div>
+                )}
+
+                <p className="mt-2 text-xs text-slate-400">
+                  Flagged {formatDate(b.flaggedAt)} · Submitted {formatDate(b.submittedAt)}
+                </p>
+              </div>
+            ))}
+          </div>
+        )}
+      </Card>
+    </PageShell>
   );
 }

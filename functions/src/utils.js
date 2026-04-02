@@ -76,19 +76,18 @@ function calculateCreditLimit(personalSavings) {
   return Number(personalSavings || 0) * 1.5;
 }
 
-function calculateInterest(amount, termDays) {
-  const rates = {
-    7: 0.06,
-    14: 0.05,
-    30: 0.04,
-  };
-
-  const rate = rates[termDays] || 0;
+function calculateContractedLoanPricing(amount, termConfig) {
   const principal = Number(amount || 0);
-  const interestAmount = Math.round(principal * rate);
-  const totalDue = principal + interestAmount;
+  const feePct = Number(termConfig?.contractedFeePct || 0);
+  const minimumFeeFloor = Math.max(0, Number(termConfig?.minimumFeeFloor || 0));
+  const contractedFeeAmount = Math.max(minimumFeeFloor, Math.round(principal * feePct));
+  const totalDue = principal + contractedFeeAmount;
 
-  return { rate, interestAmount, totalDue };
+  return {
+    contractedFeePct: feePct,
+    contractedFeeAmount,
+    totalDue,
+  };
 }
 
 function generateGroupCode() {
@@ -120,7 +119,7 @@ module.exports = {
   checkPINLockout,
   incrementPINAttempts,
   calculateCreditLimit,
-  calculateInterest,
+  calculateContractedLoanPricing,
   generateGroupCode,
   generateInviteCode,
   generateReceiptNo,

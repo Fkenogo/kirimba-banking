@@ -35,10 +35,11 @@ export default function LoanPortfolioScreen() {
   useEffect(() => { load(); }, []);
 
   const counts = portfolio?.countByStatus || {};
+  const termEconomics = portfolio?.termEconomics || [];
   const totalIssued = (counts.active || 0) + (counts.repaid || 0) + (counts.defaulted || 0) + (counts.pending || 0);
 
   return (
-    <main className="min-h-screen bg-slate-50 p-6">
+    <main className="px-8 py-7 bg-brand-50">
       <div className="mx-auto max-w-4xl space-y-4">
 
         <div className="flex items-center justify-between gap-4">
@@ -46,7 +47,7 @@ export default function LoanPortfolioScreen() {
             <button
               type="button"
               onClick={() => navigate("/admin/dashboard")}
-              className="mb-1 flex items-center gap-1 text-xs text-slate-500 hover:text-slate-700"
+              className="mb-1 flex items-center gap-1 text-xs font-medium text-brand-600 hover:text-brand-700"
             >
               ← Back to Dashboard
             </button>
@@ -57,14 +58,14 @@ export default function LoanPortfolioScreen() {
             type="button"
             onClick={load}
             disabled={loading}
-            className="rounded-md border border-slate-300 px-3 py-1.5 text-sm text-slate-700 bg-white hover:bg-slate-50 disabled:opacity-60"
+            className="rounded-md border border-slate-300 px-3 py-1.5 text-sm text-slate-700 bg-white hover:bg-brand-50 disabled:opacity-60"
           >
             Refresh
           </button>
         </div>
 
         {error && (
-          <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3">
+          <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3">
             <p className="text-sm text-red-700">{error}</p>
           </div>
         )}
@@ -100,8 +101,34 @@ export default function LoanPortfolioScreen() {
               </div>
             </section>
 
+            <section className="rounded-2xl border border-brand-100 bg-white shadow-card px-6 py-5">
+              <div className="flex items-center justify-between gap-3 mb-4">
+                <div>
+                  <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-500">Term Economics</h2>
+                  <p className="text-xs text-slate-400 mt-1">Loan count, collected fee income, and average size by contracted term</p>
+                </div>
+                <span className="text-xs text-slate-400">{totalIssued} issued loans in view</span>
+              </div>
+              <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
+                {termEconomics.map((entry) => (
+                  <div key={entry.termDays} className="rounded-xl border border-slate-200 bg-brand-50 px-4 py-4">
+                    <div className="flex items-center justify-between gap-3">
+                      <p className="text-sm font-semibold text-slate-800">{entry.termDays} days</p>
+                      <span className="rounded-full bg-brand-500 px-2.5 py-1 text-[11px] font-semibold text-white">
+                        {entry.loanCount} loans
+                      </span>
+                    </div>
+                    <dl className="mt-4 space-y-2">
+                      <SummaryRow label="Fee Income" value={formatAmount(entry.feeIncomeCollected)} />
+                      <SummaryRow label="Average Size" value={formatAmount(entry.averageLoanSize)} />
+                    </dl>
+                  </div>
+                ))}
+              </div>
+            </section>
+
             {/* Health ratios */}
-            <section className="rounded-xl border border-slate-200 bg-white shadow-sm px-6 py-5">
+            <section className="rounded-2xl border border-brand-100 bg-white shadow-card px-6 py-5">
               <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-500 mb-4">Portfolio Health</h2>
               <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
                 <HealthRow
@@ -194,6 +221,15 @@ function HealthRow({ label, value, note, warn, good }) {
         </p>
       </div>
       <p className="text-xs text-slate-400">{note}</p>
+    </div>
+  );
+}
+
+function SummaryRow({ label, value }) {
+  return (
+    <div className="flex items-center justify-between gap-3">
+      <dt className="text-xs text-slate-500">{label}</dt>
+      <dd className="text-sm font-semibold text-slate-800">{value}</dd>
     </div>
   );
 }

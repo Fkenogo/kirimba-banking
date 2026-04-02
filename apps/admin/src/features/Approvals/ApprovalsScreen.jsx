@@ -89,6 +89,12 @@ export default function ApprovalsScreen() {
   const [umucoAccountNo, setUmucoAccountNo] = useState("");
   const [actionError, setActionError] = useState("");
 
+  // Withdrawal action state
+  const [workingWithdrawalId, setWorkingWithdrawalId] = useState(null);
+  const [activeRejectWithdrawalId, setActiveRejectWithdrawalId] = useState(null);
+  const [withdrawalRejectReason, setWithdrawalRejectReason] = useState("");
+  const [withdrawalActionError, setWithdrawalActionError] = useState("");
+
   const pendingMembersCount = members.length;
   const pendingGroupsCount = groups.length;
 
@@ -202,15 +208,50 @@ export default function ApprovalsScreen() {
     }
   }
 
+  async function handleApproveWithdrawal(requestId) {
+    setWithdrawalActionError("");
+    setWorkingWithdrawalId(requestId);
+    try {
+      const fn = httpsCallable(functions, "approveWithdrawal");
+      await fn({ requestId });
+      setWithdrawals((prev) => prev.filter((r) => r.id !== requestId));
+    } catch (err) {
+      setWithdrawalActionError(getBackendErrorMessage(err, "Failed to approve withdrawal."));
+    } finally {
+      setWorkingWithdrawalId(null);
+    }
+  }
+
+  async function handleRejectWithdrawal(requestId) {
+    const reason = withdrawalRejectReason.trim();
+    if (!reason) {
+      setWithdrawalActionError("Rejection reason is required.");
+      return;
+    }
+    setWithdrawalActionError("");
+    setWorkingWithdrawalId(requestId);
+    try {
+      const fn = httpsCallable(functions, "rejectWithdrawal");
+      await fn({ requestId, reason });
+      setWithdrawals((prev) => prev.filter((r) => r.id !== requestId));
+      setActiveRejectWithdrawalId(null);
+      setWithdrawalRejectReason("");
+    } catch (err) {
+      setWithdrawalActionError(getBackendErrorMessage(err, "Failed to reject withdrawal."));
+    } finally {
+      setWorkingWithdrawalId(null);
+    }
+  }
+
   return (
-    <main className="min-h-screen bg-slate-50 p-6">
+    <main className="px-8 py-7 bg-brand-50">
       <div className="mx-auto max-w-5xl space-y-5">
         <div className="flex items-center justify-between">
           <div>
             <button
               type="button"
               onClick={() => navigate("/admin/dashboard")}
-              className="mb-1 flex items-center gap-1 text-xs text-slate-500 hover:text-slate-700"
+              className="mb-1 flex items-center gap-1 text-xs font-medium text-brand-600 hover:text-brand-700"
             >
               ← Back to Dashboard
             </button>
@@ -225,20 +266,20 @@ export default function ApprovalsScreen() {
             type="button"
             onClick={() => { loadPendingApprovals(); loadWithdrawals(); }}
             disabled={loading}
-            className="rounded-md border border-slate-300 px-3 py-1.5 text-sm text-slate-700 bg-white hover:bg-slate-50 disabled:opacity-60"
+            className="rounded-md border border-slate-300 px-3 py-1.5 text-sm text-slate-700 bg-white hover:bg-brand-50 disabled:opacity-60"
           >
             Refresh
           </button>
         </div>
 
         {(error || actionError) && (
-          <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3">
+          <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3">
             <p className="text-sm text-red-600">{error || actionError}</p>
           </div>
         )}
 
-        <section className="rounded-xl border border-slate-200 bg-white shadow-sm">
-          <div className="px-5 py-4 border-b border-slate-100">
+        <section className="rounded-2xl border border-brand-100 bg-white shadow-card">
+          <div className="px-5 py-4 border-b border-brand-100">
             <h2 className="text-base font-semibold text-slate-900">Pending Members</h2>
           </div>
           {loading ? (
@@ -246,7 +287,7 @@ export default function ApprovalsScreen() {
           ) : members.length === 0 ? (
             <div className="px-5 py-10 text-sm text-slate-500">No pending members.</div>
           ) : (
-            <div className="divide-y divide-slate-100">
+            <div className="divide-y divide-brand-50">
               {members.map((member) => {
                 const isRejecting = activeRejectMemberId === member.id;
                 const isWorking = workingMemberId === member.id;
@@ -263,7 +304,7 @@ export default function ApprovalsScreen() {
                           type="button"
                           onClick={() => handleApproveMember(member.id)}
                           disabled={isWorking}
-                          className="rounded-md bg-emerald-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-800 disabled:opacity-60"
+                          className="rounded-md bg-brand-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-brand-600 disabled:opacity-60"
                         >
                           {isWorking ? "Working…" : "Approve"}
                         </button>
@@ -283,7 +324,7 @@ export default function ApprovalsScreen() {
                     </div>
 
                     {isRejecting && (
-                      <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 space-y-2">
+                      <div className="rounded-lg border border-slate-200 bg-brand-50 p-3 space-y-2">
                         <label className="block text-xs font-medium text-slate-600">
                           Rejection reason
                           <textarea
@@ -301,7 +342,7 @@ export default function ApprovalsScreen() {
                               setActiveRejectMemberId(null);
                               setRejectReason("");
                             }}
-                            className="rounded-md border border-slate-300 px-3 py-1.5 text-xs text-slate-700 bg-white hover:bg-slate-50"
+                            className="rounded-md border border-slate-300 px-3 py-1.5 text-xs text-slate-700 bg-white hover:bg-brand-50"
                           >
                             Cancel
                           </button>
@@ -323,8 +364,8 @@ export default function ApprovalsScreen() {
           )}
         </section>
 
-        <section className="rounded-xl border border-slate-200 bg-white shadow-sm">
-          <div className="px-5 py-4 border-b border-slate-100">
+        <section className="rounded-2xl border border-brand-100 bg-white shadow-card">
+          <div className="px-5 py-4 border-b border-brand-100">
             <h2 className="text-base font-semibold text-slate-900">Pending Groups</h2>
           </div>
 
@@ -333,7 +374,7 @@ export default function ApprovalsScreen() {
           ) : groups.length === 0 ? (
             <div className="px-5 py-10 text-sm text-slate-500">No pending groups.</div>
           ) : (
-            <div className="divide-y divide-slate-100">
+            <div className="divide-y divide-brand-50">
               {groups.map((group) => {
                 const isWorking = workingGroupId === group.id;
                 const isApproving = approvingGroupId === group.id;
@@ -355,13 +396,13 @@ export default function ApprovalsScreen() {
                           setUmucoAccountNo("");
                         }}
                         disabled={isWorking}
-                        className="rounded-md bg-emerald-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-800 disabled:opacity-60"
+                        className="rounded-md bg-brand-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-brand-600 disabled:opacity-60"
                       >
                         Approve
                       </button>
                     </div>
                     {isApproving && (
-                      <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 space-y-2">
+                      <div className="rounded-lg border border-slate-200 bg-brand-50 p-3 space-y-2">
                         <label className="block text-xs font-medium text-slate-600">
                           Umuco account number
                           <input
@@ -376,7 +417,7 @@ export default function ApprovalsScreen() {
                           <button
                             type="button"
                             onClick={() => { setApprovingGroupId(null); setUmucoAccountNo(""); }}
-                            className="rounded-md border border-slate-300 px-3 py-1.5 text-xs text-slate-700 bg-white hover:bg-slate-50"
+                            className="rounded-md border border-slate-300 px-3 py-1.5 text-xs text-slate-700 bg-white hover:bg-brand-50"
                           >
                             Cancel
                           </button>
@@ -384,7 +425,7 @@ export default function ApprovalsScreen() {
                             type="button"
                             onClick={() => handleApproveGroup(group.id)}
                             disabled={isWorking}
-                            className="rounded-md bg-emerald-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-800 disabled:opacity-60"
+                            className="rounded-md bg-brand-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-brand-600 disabled:opacity-60"
                           >
                             {isWorking ? "Approving…" : "Confirm Approve"}
                           </button>
@@ -398,43 +439,96 @@ export default function ApprovalsScreen() {
           )}
         </section>
 
-        <section className="rounded-xl border border-slate-200 bg-white shadow-sm">
-          <div className="px-5 py-4 border-b border-slate-100">
+        <section className="rounded-2xl border border-brand-100 bg-white shadow-card">
+          <div className="px-5 py-4 border-b border-brand-100">
             <h2 className="text-base font-semibold text-slate-900">Pending Large Withdrawals</h2>
             <p className="text-xs text-slate-400 mt-0.5">Requests ≥ 50,000 BIF awaiting approval</p>
           </div>
+          {withdrawalActionError && (
+            <div className="mx-5 mt-3 rounded-xl border border-red-200 bg-red-50 px-4 py-3">
+              <p className="text-sm text-red-600">{withdrawalActionError}</p>
+            </div>
+          )}
           {withdrawalsLoading ? (
             <div className="px-5 py-10 text-sm text-slate-400">Loading withdrawals…</div>
           ) : withdrawals.length === 0 ? (
             <div className="px-5 py-10 text-sm text-slate-500">No pending withdrawal requests.</div>
           ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b border-slate-200 bg-slate-50 text-left text-xs font-medium uppercase tracking-wide text-slate-500">
-                    <th className="px-5 py-3">Member</th>
-                    <th className="px-5 py-3">Group</th>
-                    <th className="px-5 py-3 text-right">Amount</th>
-                    <th className="px-5 py-3">Requested</th>
-                    <th className="px-5 py-3">Notes</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100">
-                  {withdrawals.map((req) => (
-                    <tr key={req.id}>
-                      <td className="px-5 py-3 font-medium text-slate-900">{req.memberName || req.userId || "—"}</td>
-                      <td className="px-5 py-3 text-slate-700">{req.groupName || req.groupId || "—"}</td>
-                      <td className="px-5 py-3 text-right font-medium text-slate-900">
-                        {Number(req.amount || 0).toLocaleString("en-US")} BIF
-                      </td>
-                      <td className="px-5 py-3 text-slate-500 whitespace-nowrap">
-                        {formatCreatedAt(req.createdAt)}
-                      </td>
-                      <td className="px-5 py-3 text-slate-500 max-w-xs truncate">{req.notes || "—"}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+            <div className="divide-y divide-brand-50">
+              {withdrawals.map((req) => {
+                const isWorking = workingWithdrawalId === req.id;
+                const isRejecting = activeRejectWithdrawalId === req.id;
+                return (
+                  <div key={req.id} className="px-5 py-4 space-y-3">
+                    <div className="flex items-start justify-between gap-4">
+                      <div>
+                        <p className="text-sm font-semibold text-slate-900">{req.memberName || req.userId || "—"}</p>
+                        <p className="text-sm text-slate-600">{req.groupName || req.groupId || "—"}</p>
+                        <p className="text-sm font-medium text-slate-900 mt-0.5">
+                          {Number(req.amount || 0).toLocaleString("en-US")} BIF
+                        </p>
+                        <p className="text-xs text-slate-400 mt-0.5">{formatCreatedAt(req.createdAt)}</p>
+                        {req.notes && (
+                          <p className="text-xs text-slate-500 mt-0.5">{req.notes}</p>
+                        )}
+                      </div>
+                      <div className="flex gap-2 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => handleApproveWithdrawal(req.id)}
+                          disabled={isWorking}
+                          className="rounded-md bg-brand-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-brand-600 disabled:opacity-60"
+                        >
+                          {isWorking && !isRejecting ? "Working…" : "Approve"}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setWithdrawalActionError("");
+                            setActiveRejectWithdrawalId(req.id);
+                            setWithdrawalRejectReason("");
+                          }}
+                          disabled={isWorking}
+                          className="rounded-md border border-red-200 bg-red-50 px-3 py-1.5 text-xs font-medium text-red-700 hover:bg-red-100 disabled:opacity-60"
+                        >
+                          Reject
+                        </button>
+                      </div>
+                    </div>
+                    {isRejecting && (
+                      <div className="rounded-lg border border-slate-200 bg-brand-50 p-3 space-y-2">
+                        <label className="block text-xs font-medium text-slate-600">
+                          Rejection reason
+                          <textarea
+                            rows={2}
+                            value={withdrawalRejectReason}
+                            onChange={(e) => setWithdrawalRejectReason(e.target.value)}
+                            className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-slate-500 focus:outline-none"
+                            placeholder="Reason for rejection"
+                          />
+                        </label>
+                        <div className="flex justify-end gap-2">
+                          <button
+                            type="button"
+                            onClick={() => { setActiveRejectWithdrawalId(null); setWithdrawalRejectReason(""); }}
+                            className="rounded-md border border-slate-300 px-3 py-1.5 text-xs text-slate-700 bg-white hover:bg-brand-50"
+                          >
+                            Cancel
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleRejectWithdrawal(req.id)}
+                            disabled={isWorking}
+                            className="rounded-md bg-red-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-red-800 disabled:opacity-60"
+                          >
+                            {isWorking ? "Rejecting…" : "Confirm Reject"}
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           )}
         </section>

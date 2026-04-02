@@ -94,7 +94,7 @@ const PERSONAS = [
   },
   {
     uid: IDS.institution,
-    role: "umuco",
+    role: "institution_user",
     status: "active",
     fullName: "Demo Umuco Officer",
     phone: "+250700000003",
@@ -205,7 +205,9 @@ async function upsertAuthUser(persona) {
     }
   }
 
-  await auth.setCustomUserClaims(persona.uid, { role: persona.role });
+  const claims = { role: persona.role };
+  if (persona.institutionId) claims.institutionId = persona.institutionId;
+  await auth.setCustomUserClaims(persona.uid, claims);
 }
 
 async function seedUsersAndWallets() {
@@ -241,6 +243,22 @@ async function seedUsersAndWallets() {
 
     await db.collection("users").doc(persona.uid).set(userPayload, { merge: true });
 
+    if (persona.role === "agent") {
+      await db.collection("agents").doc(persona.uid).set(
+        {
+          uid: persona.uid,
+          role: persona.role,
+          status: persona.status,
+          fullName: persona.fullName,
+          phone: persona.phone,
+          institutionId: persona.institutionId || null,
+          createdAt: Timestamp.now(),
+          updatedAt: Timestamp.now(),
+        },
+        { merge: true }
+      );
+    }
+
     if (persona.status === "active" && (persona.role === "member" || persona.role === "leader")) {
       await db.collection("wallets").doc(persona.uid).set(
         {
@@ -259,6 +277,20 @@ async function seedUsersAndWallets() {
 }
 
 async function seedGroups() {
+  await db.collection("institutions").doc("umuco").set(
+    {
+      name: "Umuco SACCO",
+      shortName: "Umuco",
+      code: "UMUCO",
+      status: "active",
+      contactEmail: "operations@umuco.kirimba.app",
+      contactPhone: "+25722000001",
+      createdAt: Timestamp.now(),
+      updatedAt: Timestamp.now(),
+    },
+    { merge: true }
+  );
+
   await db.collection("groups").doc(IDS.activeGroup).set(
     {
       name: "Demo Active Group",
@@ -514,7 +546,9 @@ async function seedFinancialState() {
 async function resetSeededData() {
   const docRefs = [
     ...PERSONAS.map((u) => db.collection("users").doc(u.uid)),
+    ...PERSONAS.filter((u) => u.role === "agent").map((u) => db.collection("agents").doc(u.uid)),
     ...PERSONAS.map((u) => db.collection("wallets").doc(u.uid)),
+    db.collection("institutions").doc("umuco"),
     db.collection("groups").doc(IDS.activeGroup),
     db.collection("groups").doc(IDS.pendingGroup),
     db.collection("groupMembers").doc(IDS.leader),

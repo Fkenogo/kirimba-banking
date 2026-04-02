@@ -15,10 +15,26 @@ function httpsError(code, message) {
   return new functions.https.HttpsError(code, message);
 }
 
+async function writeAuditLog(actorUid, actorRole, action, targetId, meta = {}) {
+  try {
+    await db.collection("auditLog").add({
+      actorId: actorUid,
+      actorRole,
+      action,
+      targetType: "group",
+      targetId,
+      meta,
+      createdAt: FieldValue.serverTimestamp(),
+    });
+  } catch (error) {
+    console.error("[groupAudit] Failed to write audit log", error.message, { action, targetId });
+  }
+}
+
 /**
  * adminSetGroupBorrowPause({ groupId, paused, reason })
  *
- * Allows super_admin or finance to manually pause or resume borrowing for a
+ * Allows super_admin or admin to manually pause or resume borrowing for a
  * group. The pause is checked in requestLoan() before any other eligibility
  * rules. No money movement — only the group document is updated.
  *
@@ -30,8 +46,8 @@ exports.adminSetGroupBorrowPause = functions.https.onCall(async (data, context) 
     throw httpsError("unauthenticated", "Authentication required.");
   }
   const role = context.auth.token?.role;
-  if (role !== ROLES.SUPER_ADMIN && role !== ROLES.ADMIN && role !== ROLES.FINANCE) {
-    throw httpsError("permission-denied", "Requires super_admin, admin, or finance role.");
+  if (role !== ROLES.SUPER_ADMIN && role !== ROLES.ADMIN) {
+    throw httpsError("permission-denied", "Requires super_admin or admin role.");
   }
 
   const groupId = String(data?.groupId || "").trim();
@@ -39,7 +55,7 @@ exports.adminSetGroupBorrowPause = functions.https.onCall(async (data, context) 
     throw httpsError("invalid-argument", "groupId is required.");
   }
 
-  const paused = data?.paused;
+  const paused = typeof data?.paused === "boolean" ? data.paused : data?.isPaused;
   if (typeof paused !== "boolean") {
     throw httpsError("invalid-argument", "paused must be a boolean (true or false).");
   }
@@ -72,6 +88,9 @@ exports.adminSetGroupBorrowPause = functions.https.onCall(async (data, context) 
       };
 
   await groupRef.update(updates);
+  await writeAuditLog(context.auth.uid, role, paused ? "group_lending_paused" : "group_lending_resumed", groupId, {
+    reason: paused ? reason : null,
+  });
 
   return { success: true, groupId, paused };
 });

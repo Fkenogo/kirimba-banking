@@ -63,10 +63,10 @@ export default function LoanDetailScreen() {
     load();
   }, [loanId]);
 
-  const canApprove = loan?.status === "pending";
   const canDisburse = loan?.status === "pending";
   const canRepay = loan?.status === "active";
   const canDefault = loan?.status === "active" || loan?.status === "pending";
+  const approvalModeLabel = loan?.approvalMode === "auto_policy" ? "Auto-approved by policy" : loan?.approvalStatus || "Not required";
 
   const exposureText = useMemo(() => {
     if (!collateralExposure) return "—";
@@ -109,13 +109,13 @@ export default function LoanDetailScreen() {
   }
 
   return (
-    <main className="min-h-screen bg-slate-50 p-6">
+    <main className="px-8 py-7 bg-brand-50">
       <div className="mx-auto max-w-5xl space-y-4">
         <div>
           <button
             type="button"
             onClick={() => navigate("/admin/loans")}
-            className="mb-1 flex items-center gap-1 text-xs text-slate-500 hover:text-slate-700"
+            className="mb-1 flex items-center gap-1 text-xs font-medium text-brand-600 hover:text-brand-700"
           >
             ← Back to Loan Console
           </button>
@@ -124,7 +124,7 @@ export default function LoanDetailScreen() {
         </div>
 
         {error && (
-          <section className="rounded-lg border border-red-200 bg-red-50 px-4 py-3">
+          <section className="rounded-xl border border-red-200 bg-red-50 px-4 py-3">
             <p className="text-sm text-red-700">{error}</p>
           </section>
         )}
@@ -145,7 +145,7 @@ export default function LoanDetailScreen() {
           </section>
         ) : (
           <>
-            <section className="rounded-xl border border-slate-200 bg-white shadow-sm px-5 py-4 space-y-3">
+            <section className="rounded-2xl border border-brand-100 bg-white shadow-card px-5 py-4 space-y-3">
               <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-500">Loan Snapshot</h2>
               <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
                 <Row label="Member" value={member?.fullName || member?.name || loan.userId || "—"} />
@@ -153,9 +153,14 @@ export default function LoanDetailScreen() {
                 <Row label="Group" value={group?.name || loan.groupId || "—"} />
                 <Row label="Group ID" value={loan.groupId || "—"} />
                 <Row label="Loan Amount" value={formatAmount(loan.amount)} />
+                <Row label="Contracted Fee" value={formatAmount(loan.contractedFeeAmount ?? loan.interestAmount)} />
+                <Row label="Contracted Fee %" value={`${Number((loan.contractedFeePct ?? loan.interestRate ?? 0) * 100).toFixed(2)}%`} />
+                <Row label="Term" value={`${loan.termDays || "—"} days`} />
+                <Row label="Fee Collected" value={formatAmount(loan.feeCollectedAmount)} />
+                <Row label="Group Incentive Accrued" value={formatAmount(loan.groupIncentiveAccruedAmount)} />
                 <Row label="Remaining Due" value={formatAmount(loan.remainingDue)} />
                 <Row label="Status" value={String(loan.status || "—").replace(/_/g, " ")} />
-                <Row label="Approval Status" value={loan.approvalStatus || "—"} />
+                <Row label="Decision Mode" value={approvalModeLabel} />
                 <Row label="Created" value={formatDate(loan.createdAt)} />
                 <Row label="Disbursed" value={formatDate(loan.disbursedAt)} />
                 <Row label="Due Date" value={formatDate(loan.dueDate)} />
@@ -163,7 +168,7 @@ export default function LoanDetailScreen() {
               </div>
             </section>
 
-            <section className="rounded-xl border border-slate-200 bg-white shadow-sm px-5 py-4 space-y-3">
+            <section className="rounded-2xl border border-brand-100 bg-white shadow-card px-5 py-4 space-y-3">
               <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-500">Collateral Exposure</h2>
               <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
                 <Row label="Group Total Savings" value={formatAmount(collateralExposure?.groupTotalSavings)} />
@@ -173,18 +178,11 @@ export default function LoanDetailScreen() {
               </div>
             </section>
 
-            <section className="rounded-xl border border-slate-200 bg-white shadow-sm p-5 space-y-4">
+            <section className="rounded-2xl border border-brand-100 bg-white shadow-card p-5 space-y-4">
               <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-500">Admin Actions</h2>
+              <p className="text-sm text-slate-500">Eligible loans are created as auto-approved by policy. Disbursement and repayment remain operational actions.</p>
 
               <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
-                <button
-                  type="button"
-                  onClick={() => runAction("approveLoan")}
-                  disabled={!canApprove || working}
-                  className="rounded-md bg-indigo-700 px-3 py-2 text-sm font-medium text-white hover:bg-indigo-800 disabled:opacity-60"
-                >
-                  Approve Loan
-                </button>
                 <button
                   type="button"
                   onClick={() => runAction("adminDisburseLoan")}
@@ -218,7 +216,7 @@ export default function LoanDetailScreen() {
                     type="button"
                     onClick={handleMarkRepayment}
                     disabled={!canRepay || working}
-                    className="rounded-md bg-emerald-700 px-3 py-2 text-sm font-medium text-white hover:bg-emerald-800 disabled:opacity-60"
+                    className="rounded-md bg-brand-500 px-3 py-2 text-sm font-medium text-white hover:bg-brand-600 disabled:opacity-60"
                   >
                     Mark Repayment
                   </button>
@@ -226,8 +224,8 @@ export default function LoanDetailScreen() {
               </div>
             </section>
 
-            <section className="rounded-xl border border-slate-200 bg-white shadow-sm overflow-hidden">
-              <div className="px-5 py-4 border-b border-slate-100">
+            <section className="rounded-2xl border border-brand-100 bg-white shadow-card overflow-hidden">
+              <div className="px-5 py-4 border-b border-brand-100">
                 <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-500">Repayment History</h2>
               </div>
 
@@ -237,7 +235,7 @@ export default function LoanDetailScreen() {
                 <div className="overflow-x-auto">
                   <table className="w-full text-sm">
                     <thead>
-                      <tr className="border-b border-slate-200 bg-slate-50 text-left text-xs font-medium uppercase tracking-wide text-slate-500">
+                      <tr className="border-b border-slate-200 bg-brand-50 text-left text-xs font-semibold uppercase tracking-wide text-brand-700">
                         <th className="px-5 py-3">Date</th>
                         <th className="px-5 py-3 text-right">Amount</th>
                         <th className="px-5 py-3">Recorded By</th>
@@ -245,7 +243,7 @@ export default function LoanDetailScreen() {
                         <th className="px-5 py-3">Receipt</th>
                       </tr>
                     </thead>
-                    <tbody className="divide-y divide-slate-100">
+                    <tbody className="divide-y divide-brand-50">
                       {repaymentHistory.map((item) => (
                         <tr key={item.id}>
                           <td className="px-5 py-3 text-slate-700">{formatDate(item.createdAt)}</td>

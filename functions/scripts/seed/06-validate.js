@@ -105,14 +105,6 @@ async function run({ demo = false } = {}) {
       });
     }
 
-    // agents must have assignedGroups array
-    if (user.role === "agent") {
-      await check(`users/${user.uid} (agent) has assignedGroups array`, async () => {
-        const snap = await db.collection("users").doc(user.uid).get();
-        const d = snap.data();
-        if (!Array.isArray(d.assignedGroups)) throw new Error("assignedGroups is not an array");
-      });
-    }
   }
 
   // ── 6. Auth users and custom claims ───────────────────────────────────────
@@ -160,16 +152,6 @@ async function run({ demo = false } = {}) {
       if (!snap.exists) throw new Error("leader missing from groupMembers");
     });
 
-    // Agent assignedGroups
-    for (const agentId of grp.agentIds) {
-      await check(`agent ${agentId} has ${grp.id} in assignedGroups`, async () => {
-        const snap = await db.collection("users").doc(agentId).get();
-        const d = snap.data();
-        if (!Array.isArray(d.assignedGroups) || !d.assignedGroups.includes(grp.id)) {
-          throw new Error(`${grp.id} not in assignedGroups`);
-        }
-      });
-    }
   }
 
   // ── 8. No orphaned groupMembers ───────────────────────────────────────────

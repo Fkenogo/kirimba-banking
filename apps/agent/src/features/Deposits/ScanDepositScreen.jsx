@@ -1,74 +1,26 @@
 import { useState, useEffect, useRef } from "react";
-import { Html5Qrcode } from "html5-qrcode";
-import { collection, getDocs, query, where } from "firebase/firestore";
 import { httpsCallable } from "firebase/functions";
-import { db, functions } from "../../services/firebase";
+import { functions } from "../../services/firebase";
+import { ManualMemberLookup, QrScanner, fetchMemberByMemberId } from "../../utils/memberLookup";
 import { saveOfflineDeposit } from "../../services/offlineDeposits";
 import { onPendingCountChange, getPendingCount } from "../../services/depositSyncService";
+import { PageShell, Card, Alert, PrimaryButton } from "../../components/ui";
 
 const SCREEN = {
-  SCANNING: "scanning",
+  SCANNING:     "scanning",
+  MANUAL_LOOKUP:"manual_lookup",
   MEMBER_FOUND: "member_found",
 };
 
 const QUICK_AMOUNTS = [1000, 2000, 5000, 10000];
-const FLASH_MS = 1500;
-const SCANNER_ID = "kirimba-qr-scanner";
+const FLASH_MS = 2000;
 
-// ── Last-amount memory (per member, persisted across sessions) ───────────────
+/* ── Last-amount memory (persisted across sessions) ── */
 function readLastAmount(memberId) {
-  try { return localStorage.getItem(`kla-${memberId}`) ?? ""; }
-  catch { return ""; }
+  try { return localStorage.getItem(`kla-${memberId}`) ?? ""; } catch { return ""; }
 }
 function writeLastAmount(memberId, amount) {
-  try { localStorage.setItem(`kla-${memberId}`, String(amount)); }
-  catch {}
-}
-
-// ── QR scanner component ─────────────────────────────────────────────────────
-function QrScanner({ onScan }) {
-  const activeRef = useRef(false);
-
-  useEffect(() => {
-    const scanner = new Html5Qrcode(SCANNER_ID);
-    activeRef.current = false;
-
-    scanner
-      .start(
-        { facingMode: "environment" },
-        { fps: 10, qrbox: { width: 250, height: 250 } },
-        (text) => {
-          if (!activeRef.current) {
-            activeRef.current = true;
-            onScan(text);
-          }
-        },
-        () => {}
-      )
-      .catch(() => {});
-
-    return () => {
-      scanner.isScanning ? scanner.stop().catch(() => {}) : Promise.resolve();
-    };
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
-
-  return <div id={SCANNER_ID} className="w-full aspect-square rounded-2xl overflow-hidden bg-black" />;
-}
-
-// ── Firestore lookup ─────────────────────────────────────────────────────────
-async function fetchMemberByMemberId(memberId) {
-  const snap = await getDocs(
-    query(collection(db, "users"), where("memberId", "==", memberId))
-  );
-  if (snap.empty) return null;
-  const d = snap.docs[0].data();
-  return {
-    userId: snap.docs[0].id,
-    memberId: d.memberId,
-    fullName: d.name ?? d.fullName ?? "Unknown",
-    groupId: d.groupId ?? null,
-    phone: d.phone ?? null,
-  };
+  try { localStorage.setItem(`kla-${memberId}`, String(amount)); } catch {}
 }
 
 function isNetworkError(err) {
@@ -80,105 +32,57 @@ function isNetworkError(err) {
   );
 }
 
-// ── Flash banner ─────────────────────────────────────────────────────────────
-function FlashBanner({ flash, onDismiss }) {
-  if (!flash) return null;
-  const isOffline = flash.type === "offline";
-
-  return (
-    <div
-      className={`rounded-xl border px-4 py-3 flex items-start gap-3 ${
-        isOffline
-          ? "bg-amber-50 border-amber-200"
-          : "bg-green-50 border-green-200"
-      }`}
-    >
-      <span className={`mt-0.5 text-base ${isOffline ? "text-amber-500" : "text-green-500"}`}>
-        {isOffline ? "⏳" : "✓"}
-      </span>
-      <div className="flex-1 min-w-0">
-        <p className={`text-sm font-semibold ${isOffline ? "text-amber-800" : "text-green-800"}`}>
-          {isOffline ? "Saved Offline" : "Deposit Recorded"}
-        </p>
-        <p className="text-xs text-slate-600 mt-0.5 truncate">
-          {flash.member.fullName} &middot; {Number(flash.amount).toLocaleString()} BIF
-        </p>
-        {isOffline && (
-          <p className="text-xs text-amber-600 mt-0.5">Will sync automatically when online.</p>
-        )}
-      </div>
-      <button
-        onClick={onDismiss}
-        className="text-slate-400 hover:text-slate-600 text-lg leading-none shrink-0"
-        aria-label="Dismiss"
-      >
-        ×
-      </button>
-    </div>
-  );
-}
-
-// ── Main screen ──────────────────────────────────────────────────────────────
+/* ── Main screen ── */
 export default function ScanDepositScreen({ user }) {
-  const [screen, setScreen] = useState(SCREEN.SCANNING);
-  const [member, setMember] = useState(null);
-  const [amount, setAmount] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState(null);
-  const [manualId, setManualId] = useState("");
-  const [isOnline, setIsOnline] = useState(navigator.onLine);
+  const [screen, setScreen]       = useState(SCREEN.SCANNING);
+  const [member, setMember]       = useState(null);
+  const [amount, setAmount]       = useState("");
+  const [loading, setLoading]     = useState(false);
+  const [error, setError]         = useState(null);
+  const [isOnline, setIsOnline]   = useState(navigator.onLine);
   const [pendingCount, setPendingCount] = useState(0);
-  const [flash, setFlash] = useState(null); // { type, member, amount }
+  const [flash, setFlash]         = useState(null);
+  const flashTimerRef             = useRef(null);
 
-  const flashTimerRef = useRef(null);
-
-  // ── Online/offline tracking ──
+  /* Online/offline tracking */
   useEffect(() => {
-    const up = () => setIsOnline(true);
+    const up   = () => setIsOnline(true);
     const down = () => setIsOnline(false);
-    window.addEventListener("online", up);
+    window.addEventListener("online",  up);
     window.addEventListener("offline", down);
-    return () => {
-      window.removeEventListener("online", up);
-      window.removeEventListener("offline", down);
-    };
+    return () => { window.removeEventListener("online", up); window.removeEventListener("offline", down); };
   }, []);
 
-  // ── Pending sync count ──
   useEffect(() => {
     getPendingCount().then(setPendingCount);
     return onPendingCountChange(setPendingCount);
   }, []);
 
-  // ── Cleanup flash timer on unmount ──
-  useEffect(() => () => { clearTimeout(flashTimerRef.current); }, []);
+  useEffect(() => () => clearTimeout(flashTimerRef.current), []);
 
-  // ── Flash helpers ──
-  function showFlash(type, flashMember, flashAmount) {
+  function showFlash(type, fm, fa) {
     clearTimeout(flashTimerRef.current);
-    setFlash({ type, member: flashMember, amount: flashAmount });
+    setFlash({ type, member: fm, amount: fa });
     flashTimerRef.current = setTimeout(() => setFlash(null), FLASH_MS);
   }
-  function dismissFlash() {
-    clearTimeout(flashTimerRef.current);
-    setFlash(null);
+
+  /* Member lookup */
+  function applySelectedMember(found) {
+    setAmount(readLastAmount(found.memberId));
+    setMember(found);
+    setScreen(SCREEN.MEMBER_FOUND);
   }
 
-  // ── Member load ──
   async function loadMember(memberId) {
     setLoading(true);
     setError(null);
     try {
       const found = await fetchMemberByMemberId(memberId.trim());
-      if (!found) {
-        setError(`No member found with ID "${memberId}".`);
-        return;
-      }
-      setAmount(readLastAmount(found.memberId)); // pre-fill last amount
-      setMember(found);
-      setScreen(SCREEN.MEMBER_FOUND);
+      if (!found) { setError(`No member found for ID "${memberId}".`); return; }
+      if (!found.isSelectable) { setError(found.restriction || "This member cannot be selected."); return; }
+      applySelectedMember(found);
     } catch {
-      setError("Failed to load member info. Try again.");
+      setError("Failed to load member. Check your connection and try again.");
     } finally {
       setLoading(false);
     }
@@ -186,28 +90,20 @@ export default function ScanDepositScreen({ user }) {
 
   async function handleScan(text) {
     let data;
-    try { data = JSON.parse(text); }
-    catch { setError("Invalid QR code format."); return; }
-    if (!data?.memberId) { setError("QR code is missing memberId."); return; }
+    try { data = JSON.parse(text); } catch { setError("Invalid QR code format."); return; }
+    if (!data?.memberId) { setError("QR code is missing member ID."); return; }
     await loadMember(data.memberId);
   }
 
-  async function handleManualLoad() {
-    if (!manualId.trim()) { setError("Enter a Member ID."); return; }
-    await loadMember(manualId);
-  }
-
-  // ── Deposit submit ──
+  /* Deposit submit */
   async function handleSubmit() {
-    const parsedAmount = parseFloat(amount);
-    if (!parsedAmount || parsedAmount <= 0) { setError("Enter a valid amount."); return; }
+    const parsed = parseFloat(amount);
+    if (!parsed || parsed <= 0) { setError("Enter a valid deposit amount."); return; }
 
     setLoading(true);
     setError(null);
-
-    // Capture before reset
     const submittedMember = member;
-    const submittedAmount = parsedAmount;
+    const submittedAmount = parsed;
 
     try {
       const recordDeposit = httpsCallable(functions, "recordDeposit");
@@ -215,7 +111,7 @@ export default function ScanDepositScreen({ user }) {
         memberId: member.memberId,
         userId: member.userId,
         groupId: member.groupId,
-        amount: parsedAmount,
+        amount: parsed,
         channel: "agent_qr",
         source: "online",
       });
@@ -228,7 +124,7 @@ export default function ScanDepositScreen({ user }) {
           memberId: member.memberId,
           userId: member.userId,
           groupId: member.groupId ?? null,
-          amount: parsedAmount,
+          amount: parsed,
           agentId: user?.uid ?? null,
           createdAt: new Date().toISOString(),
         });
@@ -249,136 +145,160 @@ export default function ScanDepositScreen({ user }) {
     setMember(null);
     setAmount("");
     setError(null);
-    setManualId("");
   }
 
-  // ── Render ───────────────────────────────────────────────────────────────
   return (
-    <main className="min-h-screen bg-slate-50 flex flex-col">
-      {/* Header */}
-      <header className="bg-white border-b border-slate-200 px-4 py-3">
-        <div className="flex items-center justify-between">
-          <div>
-            <h1 className="text-lg font-semibold text-slate-800">Scan Deposit</h1>
-            <p className="text-xs text-slate-400 mt-0.5">Agent QR deposit workflow</p>
-          </div>
-          <div className="flex flex-col items-end gap-0.5">
-            {!isOnline && (
-              <span className="inline-flex items-center gap-1 bg-amber-100 text-amber-700 text-xs font-medium px-2 py-0.5 rounded-full">
-                <span className="w-1.5 h-1.5 rounded-full bg-amber-500 inline-block" />
-                Offline Mode
-              </span>
+    <PageShell title="Scan Deposit" user={user}>
+
+      {/* ── Status pills ── */}
+      <div className="flex items-center gap-2 flex-wrap">
+        {!isOnline && (
+          <span className="inline-flex items-center gap-1.5 bg-gold-100 text-gold-700 border border-gold-200 text-xs font-semibold px-3 py-1.5 rounded-full">
+            <span className="w-1.5 h-1.5 rounded-full bg-gold-500 inline-block" />
+            Offline Mode
+          </span>
+        )}
+        {pendingCount > 0 && (
+          <span className="inline-flex items-center gap-1.5 bg-brand-50 text-brand-700 border border-brand-100 text-xs font-semibold px-3 py-1.5 rounded-full">
+            <span className="w-1.5 h-1.5 rounded-full bg-brand-500 animate-pulse inline-block" />
+            {pendingCount} pending sync
+          </span>
+        )}
+      </div>
+
+      {/* ── Flash banner ── */}
+      {flash && (
+        <div className={`rounded-2xl border px-4 py-3 flex items-start gap-3 ${
+          flash.type === "offline"
+            ? "bg-gold-50 border-gold-200"
+            : "bg-brand-50 border-brand-200"
+        }`}>
+          <div className={`w-8 h-8 rounded-xl flex items-center justify-center shrink-0 mt-0.5 ${
+            flash.type === "offline" ? "bg-gold-100" : "bg-brand-100"
+          }`}>
+            {flash.type === "offline" ? (
+              <svg className="w-4 h-4 text-gold-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+            ) : (
+              <svg className="w-4 h-4 text-brand-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+              </svg>
             )}
-            {pendingCount > 0 && (
-              <span className="text-xs text-slate-400">
-                Pending Sync: {pendingCount} deposit{pendingCount !== 1 ? "s" : ""}
-              </span>
-            )}
           </div>
-        </div>
-      </header>
-
-      <div className="flex-1 p-4 max-w-md mx-auto w-full space-y-4">
-
-        {/* ── Scanning ── */}
-        {screen === SCREEN.SCANNING && (
-          <div className="space-y-4">
-            {/* Flash banner (auto-dismisses in 1.5s) */}
-            <FlashBanner flash={flash} onDismiss={dismissFlash} />
-
-            <p className="text-sm text-slate-500 text-center">
-              Point the camera at a member&apos;s QR code
+          <div className="flex-1">
+            <p className={`text-sm font-bold ${flash.type === "offline" ? "text-gold-800" : "text-brand-800"}`}>
+              {flash.type === "offline" ? "Saved Offline" : "Deposit Recorded"}
             </p>
+            <p className="text-xs text-slate-600 mt-0.5">
+              {flash.member.fullName} · {Number(flash.amount).toLocaleString()} BIF
+            </p>
+            {flash.type === "offline" && (
+              <p className="text-xs text-gold-600 mt-0.5">Will sync automatically when online.</p>
+            )}
+          </div>
+          <button onClick={() => setFlash(null)} className="text-slate-300 hover:text-slate-500 text-xl leading-none">×</button>
+        </div>
+      )}
 
-            <div className="rounded-2xl overflow-hidden border border-slate-200 shadow-sm">
+      {/* ── SCANNING state ── */}
+      {screen === SCREEN.SCANNING && (
+        <>
+          <p className="text-sm text-slate-500 text-center">Point the camera at a member QR code</p>
+
+          {/* QR camera view */}
+          <Card>
+            <div className="rounded-3xl overflow-hidden">
               <QrScanner onScan={handleScan} />
             </div>
+          </Card>
 
-            {loading && (
-              <p className="text-sm text-center text-blue-600 animate-pulse">
-                Looking up member…
-              </p>
-            )}
+          <button
+            type="button"
+            onClick={() => { setError(null); setScreen(SCREEN.MANUAL_LOOKUP); }}
+            className="w-full rounded-2xl border-2 border-brand-100 bg-white px-4 py-3 text-sm font-bold text-brand-600 hover:bg-brand-50 transition-colors"
+          >
+            Can't scan? Find member manually
+          </button>
 
-            {/* Manual fallback */}
-            <div className="pt-2">
-              <div className="flex items-center gap-3 mb-3">
-                <div className="flex-1 h-px bg-slate-200" />
-                <span className="text-xs text-slate-400 whitespace-nowrap">or enter manually</span>
-                <div className="flex-1 h-px bg-slate-200" />
-              </div>
-              <p className="text-sm font-medium text-slate-700 mb-2">Enter Member ID</p>
-              <div className="flex gap-2">
-                <input
-                  type="text"
-                  value={manualId}
-                  onChange={(e) => setManualId(e.target.value)}
-                  onKeyDown={(e) => e.key === "Enter" && handleManualLoad()}
-                  placeholder="e.g. G01-023"
-                  className="flex-1 border border-slate-300 rounded-xl px-3 py-2.5 text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white text-sm"
-                />
-                <button
-                  onClick={handleManualLoad}
-                  disabled={loading || !manualId.trim()}
-                  className="bg-blue-600 hover:bg-blue-700 disabled:opacity-40 text-white px-4 py-2.5 rounded-xl font-medium text-sm transition-colors"
-                >
-                  Load Member
-                </button>
-              </div>
+          {loading && (
+            <div className="flex items-center justify-center gap-2 py-2">
+              <svg className="w-4 h-4 animate-spin text-brand-500" fill="none" viewBox="0 0 24 24">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z" />
+              </svg>
+              <p className="text-sm text-brand-600 font-medium">Looking up member…</p>
             </div>
-          </div>
-        )}
+          )}
 
-        {/* ── Member found + amount entry ── */}
-        {screen === SCREEN.MEMBER_FOUND && member && (
-          <div className="space-y-4">
-            {/* Member card */}
-            <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-4 flex items-start justify-between gap-3">
+          {/* Error (scanning state) */}
+          {error && (
+            <Alert type="error">
+              <div className="flex items-start justify-between gap-2">
+                <span>{error}</span>
+                <button onClick={() => setError(null)} className="text-red-400 hover:text-red-600 shrink-0">×</button>
+              </div>
+            </Alert>
+          )}
+        </>
+      )}
+
+      {screen === SCREEN.MANUAL_LOOKUP && (
+        <ManualMemberLookup
+          onCancel={reset}
+          onSelect={(selectedMember) => {
+            setError(null);
+            applySelectedMember(selectedMember);
+          }}
+        />
+      )}
+
+      {/* ── MEMBER FOUND state ── */}
+      {screen === SCREEN.MEMBER_FOUND && member && (
+        <>
+          {/* Member identity card */}
+          <Card>
+            <div className="px-5 py-4 flex items-center justify-between gap-3">
               <div className="min-w-0">
-                <p className="text-xs font-medium text-slate-400 uppercase tracking-wider mb-1">
-                  Member
-                </p>
-                <p className="text-xl font-semibold text-slate-800 truncate">{member.fullName}</p>
-                <p className="text-sm font-mono text-blue-600 mt-0.5">{member.memberId}</p>
-                {member.groupId && (
-                  <p className="text-sm text-slate-500 mt-0.5">{member.groupId}</p>
-                )}
+                <p className="text-[11px] font-bold uppercase tracking-widest text-slate-400 mb-1">Member</p>
+                <p className="text-xl font-bold text-slate-900 truncate">{member.fullName}</p>
+                <p className="text-sm font-mono text-brand-600 mt-0.5">{member.memberId}</p>
+                {member.groupId && <p className="text-xs text-slate-400 mt-0.5">{member.groupId}</p>}
               </div>
               <button
                 onClick={reset}
-                className="text-slate-300 hover:text-slate-500 text-xl leading-none shrink-0 mt-1"
+                className="w-9 h-9 rounded-xl bg-slate-100 text-slate-400 hover:bg-slate-200 flex items-center justify-center shrink-0"
                 aria-label="Change member"
               >
-                ×
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                </svg>
               </button>
             </div>
+          </Card>
 
-            {!isOnline && (
-              <div className="bg-amber-50 border border-amber-200 rounded-xl px-4 py-2.5 flex items-center gap-2">
-                <span className="w-2 h-2 rounded-full bg-amber-500 shrink-0" />
-                <p className="text-sm text-amber-700">
-                  Offline — deposit will sync when connection returns.
-                </p>
-              </div>
-            )}
+          {!isOnline && (
+            <Alert type="warning">
+              Offline — this deposit will be saved locally and synced when your connection returns.
+            </Alert>
+          )}
 
-            {/* Amount input */}
-            <div className="space-y-2">
-              <label className="block text-sm font-medium text-slate-700">
-                Deposit Amount (BIF)
-              </label>
+          {/* Amount entry */}
+          <Card>
+            <div className="px-5 py-5 space-y-4">
+              <p className="text-xs font-bold text-slate-500 uppercase tracking-wide">Deposit Amount</p>
 
-              {/* Quick amount buttons */}
+              {/* Quick amounts */}
               <div className="grid grid-cols-4 gap-2">
                 {QUICK_AMOUNTS.map((q) => (
                   <button
                     key={q}
                     type="button"
                     onClick={() => setAmount(String(q))}
-                    className={`py-2 rounded-xl text-sm font-medium border transition-colors ${
+                    className={`py-2.5 rounded-xl text-xs font-bold border-2 transition-colors ${
                       amount === String(q)
-                        ? "bg-blue-600 text-white border-blue-600"
-                        : "bg-white text-slate-700 border-slate-300 hover:border-blue-400 hover:text-blue-600"
+                        ? "bg-brand-500 text-white border-brand-500"
+                        : "bg-slate-50 text-slate-700 border-slate-100 hover:border-brand-300"
                     }`}
                   >
                     {q.toLocaleString()}
@@ -390,44 +310,26 @@ export default function ScanDepositScreen({ user }) {
                 type="number"
                 value={amount}
                 onChange={(e) => setAmount(e.target.value)}
-                placeholder="or enter custom amount"
+                placeholder="or enter custom amount (BIF)"
                 min="1"
                 autoFocus
-                className="w-full border border-slate-300 rounded-xl px-4 py-3 text-slate-800 text-lg focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+                className="w-full rounded-2xl border-2 border-slate-100 bg-slate-50 px-4 py-3.5 text-base text-slate-800 placeholder-slate-300 focus:outline-none focus:border-brand-400 focus:bg-white transition-colors"
               />
             </div>
+          </Card>
 
-            <button
-              onClick={handleSubmit}
-              disabled={loading || !amount}
-              className="w-full bg-blue-600 hover:bg-blue-700 disabled:opacity-40 text-white py-3.5 rounded-xl font-semibold text-base transition-colors"
-            >
-              {loading ? "Recording…" : "Record Deposit"}
-            </button>
+          {error && <Alert type="error">{error}</Alert>}
 
-            <button
-              onClick={reset}
-              className="w-full text-slate-400 hover:text-slate-600 text-sm py-2 transition-colors"
-            >
-              Scan a different member
-            </button>
-          </div>
-        )}
+          <PrimaryButton loading={loading} disabled={!amount} onClick={handleSubmit}>
+            {loading ? "Recording…" : "Record Deposit"}
+          </PrimaryButton>
 
-        {/* ── Error banner ── */}
-        {error && (
-          <div className="bg-red-50 border border-red-200 rounded-xl px-4 py-3 flex items-start gap-2">
-            <p className="text-sm text-red-600 flex-1">{error}</p>
-            <button
-              onClick={() => setError(null)}
-              className="text-red-300 hover:text-red-500 text-lg leading-none shrink-0"
-              aria-label="Dismiss error"
-            >
-              ×
-            </button>
-          </div>
-        )}
-      </div>
-    </main>
+          <button onClick={reset} className="w-full text-sm text-slate-400 hover:text-slate-600 py-2">
+            ← Scan a different member
+          </button>
+        </>
+      )}
+
+    </PageShell>
   );
 }

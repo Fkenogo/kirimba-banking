@@ -885,26 +885,76 @@ exports.getActiveInstitutions = functions.https.onCall(async (data, context) => 
 });
 
 exports.getGroupMembers = functions.https.onCall(async (data, context) => {
-  await requireRole(context, [ROLES.LEADER, ROLES.SUPER_ADMIN, ROLES.ADMIN, ROLES.AGENT, ROLES.FINANCE]);
+  if (!context.auth?.uid) {
+    throw httpsError("unauthenticated", "Authentication is required.");
+  }
 
   const groupId = String(data?.groupId || "").trim();
   if (!groupId) {
     throw httpsError("invalid-argument", "groupId is required.");
   }
 
-  if (context.auth.token?.role === ROLES.LEADER) {
-    const groupSnap = await db.collection("groups").doc(groupId).get();
-    if (!groupSnap.exists || groupSnap.data().leaderId !== context.auth.uid) {
-      throw httpsError("permission-denied", "Leaders can only view members of their own group.");
+  const callerRole = context.auth.token?.role;
+  const groupSnap = await db.collection("groups").doc(groupId).get();
+  if (!groupSnap.exists) {
+    throw httpsError("not-found", "Group not found.");
+  }
+
+  const groupData = groupSnap.data() || {};
+
+  const isPrivileged = [ROLES.SUPER_ADMIN, ROLES.ADMIN, ROLES.AGENT, ROLES.FINANCE].includes(callerRole);
+  const isLeaderOfGroup = callerRole === ROLES.LEADER && groupData.leaderId === context.auth.uid;
+
+  if (callerRole === ROLES.LEADER && !isLeaderOfGroup) {
+    throw httpsError("permission-denied", "Leaders can only view members of their own group.");
+  }
+
+  if (!isPrivileged && !isLeaderOfGroup) {
+    const [memberSnap, userSnap] = await Promise.all([
+      db.collection("groupMembers").doc(context.auth.uid).get(),
+      db.collection("users").doc(context.auth.uid).get(),
+    ]);
+
+    const memberGroupId = memberSnap.exists ? String(memberSnap.data()?.groupId || "").trim() : "";
+    const profileGroupId = userSnap.exists
+      ? String(userSnap.data()?.groupId || userSnap.data()?.ledGroupId || "").trim()
+      : "";
+
+    if (memberGroupId !== groupId && profileGroupId !== groupId) {
+      throw httpsError("permission-denied", "Members can only view a preview of their own group.");
     }
   }
 
-  const gmSnap = await db
-    .collection("groupMembers")
-    .where("groupId", "==", groupId)
-    .get();
+  const [gmSnap, usersInGroupSnap, leaderUsersSnap] = await Promise.all([
+    db.collection("groupMembers").where("groupId", "==", groupId).get(),
+    db.collection("users").where("groupId", "==", groupId).get(),
+    db.collection("users").where("ledGroupId", "==", groupId).get(),
+  ]);
 
-  const members = gmSnap.docs.map((d) => ({ userId: d.data().userId, joinedAt: d.data().joinedAt }));
+  const memberMap = new Map();
+  gmSnap.docs.forEach((docSnap) => {
+    const data = docSnap.data() || {};
+    const userId = String(data.userId || docSnap.id || "").trim();
+    if (!userId) return;
+    memberMap.set(userId, {
+      userId,
+      joinedAt: data.joinedAt || null,
+    });
+  });
+
+  [...usersInGroupSnap.docs, ...leaderUsersSnap.docs].forEach((docSnap) => {
+    const userId = String(docSnap.id || "").trim();
+    if (!userId) return;
+    if (!memberMap.has(userId)) {
+      const data = docSnap.data() || {};
+      memberMap.set(userId, {
+        userId,
+        joinedAt: data.approvedAt || data.createdAt || null,
+      });
+    }
+  });
+
+  const members = [...memberMap.values()];
   const userSnaps = await Promise.all(members.map(({ userId }) => db.collection("users").doc(userId).get()));
 
   return {
@@ -914,7 +964,7 @@ exports.getGroupMembers = functions.https.onCall(async (data, context) => {
       return {
         userId,
         fullName: u.fullName || u.name || "Unknown",
-        phone: u.phone || null,
+        role: userId === groupData.leaderId ? ROLES.LEADER : (u.role || ROLES.MEMBER),
         joinedAt,
       };
     }),

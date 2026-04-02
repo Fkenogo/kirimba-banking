@@ -102,7 +102,7 @@ export default function CreateAgentScreen() {
 
   if (createdAgentId) {
     return (
-      <main className="min-h-screen bg-slate-50 p-6">
+      <main className="px-8 py-7 bg-brand-50">
         <div className="mx-auto max-w-md">
           <div className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
             <div className="flex items-center gap-2">
@@ -111,7 +111,7 @@ export default function CreateAgentScreen() {
               </span>
               <h1 className="text-xl font-semibold text-slate-900">Agent Created</h1>
             </div>
-            <div className="mt-4 rounded-lg bg-slate-50 p-4">
+            <div className="mt-4 rounded-lg bg-brand-50 p-4">
               <p className="text-sm text-slate-600">
                 <span className="font-medium">Name:</span> {fullName.trim()}
               </p>
@@ -130,7 +130,7 @@ export default function CreateAgentScreen() {
             <button
               type="button"
               onClick={() => navigate("/admin/agents")}
-              className="mt-5 w-full rounded-md bg-slate-900 px-4 py-2 text-sm font-medium text-white"
+              className="mt-5 w-full rounded-md bg-brand-500 px-4 py-2 text-sm font-medium text-white"
             >
               View Agent List
             </button>
@@ -141,7 +141,7 @@ export default function CreateAgentScreen() {
   }
 
   return (
-    <main className="min-h-screen bg-slate-50 p-6">
+    <main className="px-8 py-7 bg-brand-50">
       <div className="mx-auto max-w-md">
         <div className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
           <button
@@ -220,7 +220,7 @@ export default function CreateAgentScreen() {
             <button
               type="submit"
               disabled={isSubmitting}
-              className="w-full rounded-md bg-slate-900 px-4 py-2 text-sm font-medium text-white disabled:opacity-60"
+              className="w-full rounded-md bg-brand-500 px-4 py-2 text-sm font-medium text-white disabled:opacity-60"
             >
               {isSubmitting ? "Creating agent..." : "Create Agent"}
             </button>

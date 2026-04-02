@@ -74,8 +74,6 @@ async function run({ dryRun = false } = {}) {
       createdAt:                now,
       approvedAt:               now,
       updatedAt:                null,
-      // Agents only
-      ...(user.role === "agent" ? { assignedGroups: [] } : {}),
     };
 
     await w(
